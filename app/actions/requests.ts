@@ -7,7 +7,8 @@ import * as server from "@/lib/server.ts";
 import * as wf from "@/lib/workflow.ts";
 import { assertRole } from "@/lib/auth.ts";
 import { payAsOrganizer } from "@/lib/chain/payTool.ts";
-import { maybeAutoPay } from "@/lib/autopay.ts";
+import { after } from "next/server";
+import { runAutoPay } from "@/lib/autopay.ts";
 import { reconcile } from "@/lib/chain/reconcile.ts";
 import * as repo from "@/lib/repo.ts";
 import { parseArsToCents } from "@/lib/money.ts";
@@ -32,7 +33,7 @@ export async function submitExpenseAction(fd: FormData) {
       file: { bytes: new Uint8Array(await file.arrayBuffer()), mime: file.type },
     });
     await wf.analyzeRequest(ctx, id);
-    target = withAutoPay(reqPath(id), await maybeAutoPay(ctx, id, server.payTool()));
+    target = startAutoPay(ctx, id, reqPath(id));
   } catch (err) {
     target = withQuery("/presentar", "error", errorMessage(err));
   }
@@ -49,7 +50,7 @@ export async function retryAnalysisAction(fd: FormData) {
     const ctx = server.ctx();
     const r = await wf.analyzeRequest(ctx, id);
     if (r.ai_error) target = withQuery(target, "error", r.ai_error);
-    else target = withAutoPay(target, await maybeAutoPay(ctx, id, server.payTool()));
+    else target = startAutoPay(ctx, id, target);
   } catch (err) {
     target = withQuery(`/solicitudes/${str(fd, "requestId")}`, "error", errorMessage(err));
   }
@@ -64,7 +65,7 @@ export async function respondAction(fd: FormData) {
     wf.respondClarification(ctx, await getSession(), id, str(fd, "message"));
     const r = await wf.analyzeRequest(ctx, id);
     if (r.ai_error) target = withQuery(target, "error", r.ai_error);
-    else target = withAutoPay(target, await maybeAutoPay(ctx, id, server.payTool()));
+    else target = startAutoPay(ctx, id, target);
   } catch (err) {
     target = withQuery(target, "error", errorMessage(err));
   }
@@ -164,11 +165,16 @@ export async function reconcileAction(fd: FormData) {
   redirect(target);
 }
 
-/** Si el agente pagó solo, lo avisa en la redirección. */
-function withAutoPay(target: string, res: Awaited<ReturnType<typeof maybeAutoPay>>): string {
-  if (!res) return target;
-  const prefix = "Pagado por el agente (pago automático). ";
-  return withQuery(target, res.status === "confirmed" ? "ok" : "error", prefix + payMessage(res.status, res.mode));
+/**
+ * Si el gasto entra en el pago automático, el agente lo autoriza ya (decide el código) y el pago corre
+ * en segundo plano, después de responder: la página del gasto muestra "El agente está pagando…" y se
+ * refresca sola hasta que se confirma.
+ */
+function startAutoPay(ctx: ReturnType<typeof server.ctx>, id: number, target: string): string {
+  if (wf.autoAuthorize(ctx, id) == null) return target;
+  const payTool = server.payTool();
+  after(() => runAutoPay(ctx, id, payTool));
+  return target;
 }
 
 function payMessage(status: string, mode: string): string {

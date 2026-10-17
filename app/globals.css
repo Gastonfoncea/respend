@@ -2279,3 +2279,100 @@ select.input {
     animation: none;
   }
 }
+
+/* ---------- pago automático ---------- */
+
+/* "El agente está pagando…": barra indeterminada que avanza. */
+.agent-paying {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 20px;
+  margin-top: 8px;
+  border-radius: var(--r-lg);
+  background: linear-gradient(180deg, var(--s2), var(--s1));
+  border: 1px solid rgb(168 255 120 / 0.25);
+}
+.paying-bar {
+  position: relative;
+  height: 6px;
+  border-radius: 99px;
+  background: var(--s3);
+  overflow: hidden;
+}
+.paying-bar span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 40%;
+  border-radius: inherit;
+  background: var(--g);
+  box-shadow: var(--glow);
+  animation: paying 1.3s var(--ease-out) infinite;
+}
+@keyframes paying {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(260%);
+  }
+}
+
+/* "Te pagó el agente": el check se dibuja. */
+.check-draw circle,
+.check-draw path {
+  fill: none;
+  stroke: var(--g);
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.check-draw circle {
+  stroke-dasharray: 151;
+  stroke-dashoffset: 151;
+  opacity: 0.45;
+  animation: draw 700ms var(--ease-out) forwards;
+}
+.check-draw path {
+  stroke-dasharray: 40;
+  stroke-dashoffset: 40;
+  animation: draw 420ms var(--ease-out) 520ms forwards;
+}
+.check-draw {
+  filter: drop-shadow(0 0 14px rgb(168 255 120 / 0.35));
+}
+@keyframes draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+/* Marca en la lista: este gasto lo pagó el agente solo. */
+.item-auto {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--g);
+}
+.item-auto .agent-dot {
+  width: 6px;
+  height: 6px;
+  animation: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .paying-bar span {
+    animation: none;
+    width: 100%;
+    opacity: 0.6;
+  }
+  .check-draw circle,
+  .check-draw path {
+    animation: none;
+    stroke-dashoffset: 0;
+  }
+}

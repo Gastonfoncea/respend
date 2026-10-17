@@ -341,3 +341,19 @@ export function autoAuthorizedSinceCents(db: DB, sinceIso: string): number {
     .get(`${AUTO_PAY_ACTOR}%`, sinceIso) as { c: number };
   return row.c;
 }
+
+/** Ids de solicitudes con una autorización vigente del agente (pagadas o pagándose solas). */
+export function autoAuthorizedRequestIds(db: DB): Set<number> {
+  const rows = db
+    .prepare("SELECT DISTINCT request_id AS id FROM authorizations WHERE authorized_by LIKE ? AND revoked_at IS NULL")
+    .all(`${AUTO_PAY_ACTOR}%`) as { id: number }[];
+  return new Set(rows.map((r) => r.id));
+}
+
+/** Cuántos gastos autorizó solo el agente desde `sinceIso` (vigentes) y por cuánto. */
+export function autoAuthorizedSince(db: DB, sinceIso: string): { count: number; cents: number } {
+  const row = db
+    .prepare("SELECT COUNT(*) AS n, COALESCE(SUM(amount_cents), 0) AS c FROM authorizations WHERE authorized_by LIKE ? AND revoked_at IS NULL AND created_at >= ?")
+    .get(`${AUTO_PAY_ACTOR}%`, sinceIso) as { n: number; c: number };
+  return { count: row.n, cents: row.c };
+}

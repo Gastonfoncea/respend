@@ -5,9 +5,10 @@
 import * as repo from "./repo.ts";
 import { autoAuthorize, type Ctx } from "./workflow.ts";
 import type { PayResult, PayTool } from "./chain/payTool.ts";
+import type { AuthorizationRow } from "./types.ts";
 
-export async function maybeAutoPay(ctx: Ctx, requestId: number, payTool: PayTool): Promise<PayResult | null> {
-  if (autoAuthorize(ctx, requestId) == null) return null;
+/** Ejecuta el pago de una solicitud que el agente ya autorizó solo. Pensado para correr en segundo plano. */
+export async function runAutoPay(ctx: Ctx, requestId: number, payTool: PayTool): Promise<PayResult | null> {
   try {
     return await payTool(requestId);
   } catch (err) {
@@ -16,4 +17,15 @@ export async function maybeAutoPay(ctx: Ctx, requestId: number, payTool: PayTool
     repo.audit(ctx.db, requestId, "sistema", "auto_pay_error", { error: (err as Error).message.slice(0, 300) });
     return null;
   }
+}
+
+/** Decide y paga en el mismo paso (tests y scripts). La app decide y paga en segundo plano por separado. */
+export async function maybeAutoPay(ctx: Ctx, requestId: number, payTool: PayTool): Promise<PayResult | null> {
+  if (autoAuthorize(ctx, requestId) == null) return null;
+  return runAutoPay(ctx, requestId, payTool);
+}
+
+/** La autorización vigente de la solicitud, si la dio el agente solo. */
+export function autoAuthorizationOf(auths: AuthorizationRow[]): AuthorizationRow | null {
+  return auths.find((a) => a.revoked_at == null && a.authorized_by.startsWith(repo.AUTO_PAY_ACTOR)) ?? null;
 }
