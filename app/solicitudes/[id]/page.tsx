@@ -142,6 +142,7 @@ export default async function SolicitudPage({
       <Row k="Categoría" tag={r.fields_source === "organizer" ? "corregido" : undefined}>
         <span style={{ textTransform: "capitalize" }}>{r.category ?? "—"}</span>
       </Row>
+      <Row k="Reclama">{r.claimant_name ?? "Sin nombre"}</Row>
       <Row k="Para">
         <CopyAddress address={r.recipient} />
       </Row>
@@ -914,6 +915,8 @@ function PayForm({ r, needsReview, mode }: { r: RequestRow; needsReview: boolean
         = {r.amount_cents != null ? formatWars(centsToWei(r.amount_cents)) : "—"} · Celo {CHAIN_ID}
       </p>
       <div className="panel stack gap-8">
+        <span className="small dim">Reclama</span>
+        <span>{r.claimant_name ?? "Sin nombre (presentado antes de que existiera el perfil)"}</span>
         <span className="small dim">Destino completo</span>
         <GroupedAddress address={r.recipient} />
       </div>

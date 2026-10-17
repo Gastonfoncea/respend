@@ -51,6 +51,8 @@ export interface RequestRow {
   updated_at: string;
   description: string;
   recipient: string;
+  /** Nombre que declaró el colaborador al presentar (copia; no cambia si después edita su perfil). */
+  claimant_name: string | null;
   file_path: string;
   file_sha256: string;
   mime: string;

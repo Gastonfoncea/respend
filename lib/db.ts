@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS requests (
   ai_ran_at TEXT,
   ai_error TEXT,
   ai_fake INTEGER NOT NULL DEFAULT 0,
+  claimant_name TEXT,
   receipt_date TEXT,
   merchant TEXT,
   concept TEXT,
@@ -108,6 +109,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
 CREATE TABLE IF NOT EXISTS collaborator_profile (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   wallet TEXT NOT NULL,
+  name TEXT,
   updated_at TEXT NOT NULL
 );
 `;
@@ -119,7 +121,15 @@ export function openDb(file: string): DB {
   db.exec("PRAGMA foreign_keys = ON;");
   db.exec("PRAGMA busy_timeout = 5000;");
   db.exec(SCHEMA);
+  // Columnas agregadas después de la primera versión: se suman a bases existentes sin borrar datos.
+  ensureColumn(db, "requests", "claimant_name", "TEXT");
+  ensureColumn(db, "collaborator_profile", "name", "TEXT");
   return db;
+}
+
+function ensureColumn(db: DB, table: string, column: string, type: string): void {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  if (!cols.some((c) => c.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
 }
 
 /**

@@ -23,6 +23,6 @@ const db = openDb(cfg.dbPath);
 repo.upsertEvent(db, DEMO_POLICY);
 // Wallet de cobro del colaborador de demo, si está en el entorno (el colaborador la puede cambiar desde "Mi wallet").
 const demoWallet = cfg.demoCollaboratorAddress ? normalizeRecipient(cfg.demoCollaboratorAddress) : null;
-if (demoWallet) repo.setCollaboratorWallet(db, demoWallet);
+if (demoWallet) repo.setCollaboratorProfile(db, { name: null, wallet: demoWallet });
 db.close();
 console.log(`Datos borrados en ${cfg.dataDir}. Evento "${DEMO_POLICY.name}" creado con la política de demo.${demoWallet ? ` Wallet del colaborador: ${demoWallet}.` : ""}`);

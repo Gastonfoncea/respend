@@ -22,8 +22,9 @@ export async function submitExpenseAction(fd: FormData) {
     if (!(file instanceof File) || file.size === 0) throw new wf.WorkflowError("Falta la imagen del comprobante.");
     const ctx = server.ctx();
     // El destinatario sale siempre del perfil del colaborador, nunca del formulario.
-    const recipient = repo.getCollaboratorWallet(ctx.db);
-    if (!recipient) throw new wf.WorkflowError("Primero cargá tu wallet de cobro en \"Mi wallet\".");
+    const profile = repo.getCollaboratorProfile(ctx.db);
+    if (!profile?.wallet || !profile.name) throw new wf.WorkflowError("Primero completá tu perfil (nombre y wallet de cobro) en \"Mi perfil\".");
+    const recipient = profile.wallet;
     const id = wf.submitExpense(ctx, session, {
       description: str(fd, "description"),
       recipient,
@@ -188,11 +189,11 @@ export async function updatePolicyAction(fd: FormData) {
   redirect(target);
 }
 
-export async function setMyWalletAction(fd: FormData) {
+export async function setMyProfileAction(fd: FormData) {
   let target: string;
   try {
-    wf.setCollaboratorWallet(server.ctx(), await getSession(), str(fd, "wallet"));
-    target = withQuery("/wallet", "ok", "Wallet guardada. Los próximos reembolsos van a esta dirección.");
+    wf.setCollaboratorProfile(server.ctx(), await getSession(), { name: str(fd, "name"), wallet: str(fd, "wallet") });
+    target = withQuery("/wallet", "ok", "Perfil guardado. Los próximos gastos salen con este nombre y se pagan a esta wallet.");
   } catch (err) {
     target = withQuery("/wallet", "error", errorMessage(err));
   }

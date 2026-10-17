@@ -1,11 +1,11 @@
-// Vista "Mi wallet" del colaborador: define a qué dirección le pagan los reembolsos.
+// Vista "Mi perfil" del colaborador: quién es (nombre declarado) y a qué dirección le pagan los reembolsos.
 // No muestra nada de la wallet del agente (saldos, fondeo, gas): eso es solo del organizador.
 import * as server from "@/lib/server.ts";
 import * as repo from "@/lib/repo.ts";
 import { formatBalance } from "@/lib/money.ts";
 import { CHAIN_ID, WARS_ADDRESS, addressUrl } from "@/lib/config.ts";
 import type { Session } from "@/lib/types.ts";
-import { setMyWalletAction } from "../actions/requests.ts";
+import { setMyProfileAction } from "../actions/requests.ts";
 import AppShell, { EventHead } from "../components/AppShell.tsx";
 import CopyAddress from "../components/CopyAddress.tsx";
 import Flash from "../components/Flash.tsx";
@@ -18,7 +18,10 @@ export default async function CollaboratorWallet({ session, error, ok }: { sessi
   const db = server.db();
   const cfg = server.config();
   const policy = repo.getPolicy(db);
-  const wallet = repo.getCollaboratorWallet(db);
+  const profile = repo.getCollaboratorProfile(db);
+  const wallet = profile?.wallet ?? null;
+  const name = profile?.name ?? null;
+  const complete = Boolean(wallet && name);
   const info = wallet ? await walletInfo(wallet) : null;
 
   return (
@@ -27,10 +30,13 @@ export default async function CollaboratorWallet({ session, error, ok }: { sessi
       <EventHead eventName={policy.name} mode={cfg.paymentMode} role={session.role} />
       <div className="page stack gap-24">
         <section className="rise" style={{ paddingTop: 20 }}>
-          <p className="label">Tu wallet de cobro</p>
-          <h1 className={`display fund-state ${wallet ? "t-green" : ""}`}>{wallet ? "Lista para cobrar" : "Falta tu wallet"}</h1>
+          <p className="label">Tu perfil de cobro</p>
+          <h1 className={`display fund-state ${complete ? "t-green" : ""}`}>
+            {complete ? `Hola, ${name}` : !name && !wallet ? "Completá tu perfil" : !name ? "Falta tu nombre" : "Falta tu wallet"}
+          </h1>
           <p className="small dim">
-            Acá te depositan los reembolsos aprobados, en wARS (pesos digitales de Ripio) sobre la red Celo. 1 wARS = 1 peso.
+            El organizador ve tu nombre en cada gasto que presentás. Los reembolsos aprobados te llegan a tu wallet, en wARS (pesos
+            digitales de Ripio) sobre la red Celo. 1 wARS = 1 peso.
           </p>
         </section>
 
@@ -51,9 +57,14 @@ export default async function CollaboratorWallet({ session, error, ok }: { sessi
           </section>
         )}
 
-        <form action={setMyWalletAction} className="stack gap-16 rise" style={{ "--i": 2 } as React.CSSProperties}>
+        <form action={setMyProfileAction} className="stack gap-16 rise" style={{ "--i": 2 } as React.CSSProperties}>
           <label className="field">
-            <span className="field-label">{wallet ? "Cambiar wallet" : "Pegá tu dirección"}</span>
+            <span className="field-label">Tu nombre</span>
+            <input className="input" name="name" required minLength={2} maxLength={60} defaultValue={name ?? ""} placeholder="Ej.: Gastón Foncea" autoComplete="name" />
+            <span className="field-help">Así te identifica el organizador cuando revisa tus gastos.</span>
+          </label>
+          <label className="field">
+            <span className="field-label">{wallet ? "Wallet de cobro" : "Pegá tu dirección"}</span>
             <input
               className="input mono"
               name="wallet"
@@ -69,14 +80,14 @@ export default async function CollaboratorWallet({ session, error, ok }: { sessi
             </span>
           </label>
           <div className="actions">
-            <SubmitButton pendingText="Guardando…">{wallet ? "Guardar cambio" : "Guardar wallet"}</SubmitButton>
+            <SubmitButton pendingText="Guardando…">{complete ? "Guardar cambios" : "Guardar perfil"}</SubmitButton>
           </div>
         </form>
 
         <div className="notice rise" style={{ "--i": 3 } as React.CSSProperties}>
           <Icon name="warn" size={18} stroke={2} />
           <span>
-            Si cambiás la wallet, los gastos que ya enviaste se pagan igual a la anterior: el organizador aprobó ese destino exacto.
+            Si cambiás tu nombre o tu wallet, los gastos que ya enviaste mantienen los datos de cuando los presentaste: el organizador aprobó ese destino exacto.
           </span>
         </div>
 

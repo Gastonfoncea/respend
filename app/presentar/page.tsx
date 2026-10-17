@@ -18,7 +18,10 @@ export default async function PresentarPage({ searchParams }: { searchParams: Pr
   const cfg = server.config();
   const db = server.db();
   const policy = repo.getPolicy(db);
-  const wallet = repo.getCollaboratorWallet(db);
+  const profile = repo.getCollaboratorProfile(db);
+  const wallet = profile?.wallet ?? null;
+  const name = profile?.name ?? null;
+  const complete = Boolean(wallet && name);
   const missingKey = cfg.ai.apiKey == null && cfg.aiMode === "real";
 
   return (
@@ -42,21 +45,22 @@ export default async function PresentarPage({ searchParams }: { searchParams: Pr
           <input className="input" name="description" maxLength={1000} required placeholder="Ej.: remís para llevar el proyector" />
         </label>
         <div className="field rise" style={{ "--i": 2 } as React.CSSProperties}>
-          <span className="field-label">Cobrás en</span>
-          {wallet ? (
+          <span className="field-label">Reclamás como</span>
+          {complete ? (
             <>
+              <span className="input">{name}</span>
               <span className="input mono" style={{ overflowWrap: "anywhere" }}>
                 {wallet}
               </span>
               <span className="field-help">
-                Tu wallet de cobro. Recibís wARS en Celo, 1 wARS = 1 peso. <Link href="/wallet">Cambiarla</Link>
+                Recibís wARS en Celo, 1 wARS = 1 peso. <Link href="/wallet">Cambiar mi perfil</Link>
               </span>
             </>
           ) : (
             <div className="notice notice-amb">
               <Icon name="warn" size={18} stroke={2} />
               <span>
-                Primero cargá tu wallet de cobro. <Link href="/wallet">Ir a Mi wallet</Link>
+                Primero completá tu perfil: nombre y wallet de cobro. <Link href="/wallet">Ir a Mi perfil</Link>
               </span>
             </div>
           )}
@@ -66,7 +70,7 @@ export default async function PresentarPage({ searchParams }: { searchParams: Pr
           hasta {shortArs(policy.capPerReceiptCents)} por ticket.
         </p>
         <div className="actions">
-          <SubmitButton pendingText="Enviando…" disabled={!wallet}>
+          <SubmitButton pendingText="Enviando…" disabled={!complete}>
             <Icon name="up" size={20} stroke={2} /> Enviar al agente
           </SubmitButton>
         </div>

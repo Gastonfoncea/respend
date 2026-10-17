@@ -22,7 +22,7 @@ const ORG_GROUPS: { title: string; statuses: RequestStatus[] }[] = [
   { title: "Cerradas", statuses: ["reimbursed", "rejected"] },
 ];
 
-function Item({ r, view, i }: { r: RequestRow; view: StatusView; i: number }) {
+function Item({ r, view, i, showClaimant = false }: { r: RequestRow; view: StatusView; i: number; showClaimant?: boolean }) {
   const closed = r.status === "reimbursed" || r.status === "rejected";
   return (
     <Link href={`/solicitudes/${r.id}`} className={`item rise ${closed ? "is-muted" : ""}`} style={{ "--i": i } as React.CSSProperties}>
@@ -32,7 +32,8 @@ function Item({ r, view, i }: { r: RequestRow; view: StatusView; i: number }) {
       <span className="item-main">
         <span className="item-title">{r.merchant ?? r.description}</span>
         <span className="item-sub">
-          #{r.id} · {r.merchant ? r.description : (r.receipt_date ?? "sin fecha")}
+          #{r.id} · {showClaimant ? `${r.claimant_name ?? "Sin nombre"} · ` : ""}
+          {r.merchant ? r.description : (r.receipt_date ?? "sin fecha")}
         </span>
       </span>
       <span className="item-end">
@@ -134,7 +135,7 @@ export default async function EventoPage({ searchParams }: { searchParams: Promi
                 </SectionLabel>
                 <div className="list">
                   {rows.map((r) => (
-                    <Item key={r.id} r={r} view={orgStatus(r)} i={n++} />
+                    <Item key={r.id} r={r} view={orgStatus(r)} i={n++} showClaimant />
                   ))}
                 </div>
               </section>
