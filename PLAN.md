@@ -39,10 +39,10 @@ No afirmes en ningún lado que Ripio, Twin u otra empresa usa este proceso.
 8. **Gasto de OpenAI acotado:**
    - Los tests automatizados no llaman al modelo; usan un analizador falso.
    - Las pruebas reales con el modelo se limitan a correr los 3 comprobantes de la demo (y el de prompt injection) **una o dos veces**.
-9. **Puede no haber `OPENAI_API_KEY` esta noche.** Es lo esperado y no es un bloqueo.
+9. **Puede no haber key de IA (`AI_GATEWAY_API_KEY` u `OPENAI_API_KEY`) esta noche.** Es lo esperado y no es un bloqueo.
    - Construí todo igual: `agent/analyze.ts` real, implementado contra la API documentada en §2, más el analizador falso para los tests.
    - Dejá `npm run agent:smoke` (`scripts/agent-smoke.ts`). Con la key presente, corre el analizador real sobre los 4 PNG de `demo/receipts/`, imprime la recomendación de cada uno, la compara con la esperada (§10) y termina con código ≠ 0 si alguna no coincide.
-   - Sin key, la app arranca igual y muestra en la solicitud: "Falta OPENAI_API_KEY: el agente no puede analizar".
+   - Sin key, la app arranca igual y muestra en la solicitud: "Falta AI_GATEWAY_API_KEY: el agente no puede analizar".
    - Para recorrer la UI sin key, permití `AI_MODE=fake` (por defecto `real`). En ese modo, el analizador falso devuelve salidas fijas según el sha256 de los PNG de demo, y la UI muestra un sello "ANÁLISIS DE PRUEBA (sin IA)".
    - En `NOTAS_NOCHE.md`, dejá claro que el prompt **no fue probado contra el modelo real**.
 10. **No preguntes nada al usuario: está durmiendo.** Si algo bloquea:
@@ -67,8 +67,13 @@ No afirmes en ningún lado que Ripio, Twin u otra empresa usa este proceso.
 | Código de atribución ERC-8021 | `celo_e418a350ffec` = `codeFromRepo("gastonfoncea/respend")` | `sha256` de la ruta del repo, primeros 12 hex |
 | Explorer | `https://celoscan.io/tx/<hash>`, `https://celoscan.io/address/<addr>` | |
 
-Modelo: OpenAI, variable `OPENAI_MODEL`, por defecto `gpt-5.4-mini`. Tiene visión y está disponible para la key del usuario.
-- Usar `fetch` directo a `https://api.openai.com/v1/chat/completions` con `response_format: { type: "json_schema", json_schema: { strict: true, ... } }`.
+Modelo: por defecto vía **Vercel AI Gateway**, con OpenAI directo como alternativa. Las dos usan la misma API Chat Completions, así que el código es uno solo y se elige por entorno:
+- **Gateway (por defecto):** `AI_GATEWAY_API_KEY`, base URL `https://ai-gateway.vercel.sh/v1`, modelo `openai/gpt-5.4-mini`.
+  - Verificado el 16/10 en `https://ai-gateway.vercel.sh/v1/models`: tags `vision` y `structured-output`.
+  - Docs: https://vercel.com/docs/ai-gateway/sdks-and-apis/openai-chat-completions.md (subpáginas `images` y `structured-outputs`).
+- **OpenAI directo (alternativa):** si no hay `AI_GATEWAY_API_KEY` pero sí `OPENAI_API_KEY`, se usa base URL `https://api.openai.com/v1` y modelo `gpt-5.4-mini`.
+- Ambos valores se pueden pisar con `AI_BASE_URL` y `AI_MODEL`. La UI y `NOTAS_NOCHE.md` muestran qué proveedor y modelo se usaron. La key nunca se loguea.
+- Usar `fetch` directo a `${AI_BASE_URL}/chat/completions` con `response_format: { type: "json_schema", json_schema: { strict: true, ... } }`. La imagen va como `image_url` con data URL base64.
 - Usar `max_completion_tokens` y no `temperature`, porque los modelos gpt-5 no lo aceptan.
 - **No usar el SDK `openai`**, para no depender de cambios de API.
 
@@ -521,7 +526,7 @@ Hacé push al final de cada fase.
    - `chain/*`, `payTool` simulado + mainnet con cadena falsa, `reconcile`, `verify`, atribución. Tests 7–9, 11 y 12.
 4. **Fase D — IA real.**
    - `agent/prompt.ts` y `agent/analyze.ts`, `make-receipts`, `agent:smoke`, `AI_MODE=fake`.
-   - Corrida real sobre los PNG y ajuste de prompt **solo si hay `OPENAI_API_KEY`**. Si no hay, se deja para la mañana (§15).
+   - Corrida real sobre los PNG y ajuste de prompt **solo si hay key de IA**. Si no hay, se deja para la mañana (§15).
 5. **Fase E — UI.**
    - Las 3 vistas, login, server actions, ruta privada de comprobantes. Recorrido manual. Build ok.
 6. **Fase F — scripts y docs.**
@@ -538,7 +543,7 @@ Si el tiempo apremia, priorizá A–E con el flujo simulado completo y los tests
 ## 15. Lo que queda para el usuario por la mañana (no lo hagas vos)
 
 1. `git pull && npm install` en la laptop.
-2. `cp .env.example .env.local`, completar los passcodes, `OPENAI_API_KEY` y `DEMO_COLLABORATOR_ADDRESS`.
+2. `cp .env.example .env.local`, completar los passcodes, `AI_GATEWAY_API_KEY` (creala en vercel.com → AI Gateway → API Keys) y `DEMO_COLLABORATOR_ADDRESS`.
 3. `npm run agent:smoke` → valida el prompt contra el modelo real (unos pocos centavos de dólar).
 4. `npm run wallet:new` → imprime la dirección del agente.
 5. Fondear esa dirección con 5.000 wARS + unos 0,5 CELO.
