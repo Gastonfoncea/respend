@@ -3,19 +3,22 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=22.13" },
+  "engines": {
+    "node": ">=22.13"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "test": "node --test --test-concurrency=1 tests/",
+    "test": "node --test --test-concurrency=1 \"tests/**/*.test.ts\"",
     "wallet:new": "node scripts/new-wallet.ts",
-    "wallet:check": "node scripts/check-wallet.ts",
+    "wallet:check": "node --env-file-if-exists=.env.local scripts/check-wallet.ts",
     "receipts": "node scripts/make-receipts.ts",
-    "agent:register": "node scripts/register-agent.ts",
-    "tx:verify": "node scripts/verify-tx.ts",
-    "demo:reset": "node scripts/reset-demo.ts"
+    "agent:register": "node --env-file-if-exists=.env.local scripts/register-agent.ts",
+    "tx:verify": "node --env-file-if-exists=.env.local scripts/verify-tx.ts",
+    "demo:reset": "node --env-file-if-exists=.env.local scripts/reset-demo.ts",
+    "agent:smoke": "node --env-file-if-exists=.env.local scripts/agent-smoke.ts"
   },
   "dependencies": {
     "@celo/attribution-tags": "0.5.0",
