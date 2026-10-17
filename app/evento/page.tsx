@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { requireRole } from "@/lib/session.ts";
 import { agentDigest } from "@/lib/digest.ts";
+import AutoRefresh from "../components/AutoRefresh.tsx";
 import * as server from "@/lib/server.ts";
 import * as repo from "@/lib/repo.ts";
 import { getBudget } from "@/lib/budget.ts";
@@ -23,7 +24,7 @@ const ORG_GROUPS: { title: string; statuses: RequestStatus[] }[] = [
   { title: "Cerradas", statuses: ["reimbursed", "rejected"] },
 ];
 
-function Item({ r, view, i, showClaimant = false }: { r: RequestRow; view: StatusView; i: number; showClaimant?: boolean }) {
+function Item({ r, view, i, showClaimant = false, auto = false }: { r: RequestRow; view: StatusView; i: number; showClaimant?: boolean; auto?: boolean }) {
   const closed = r.status === "reimbursed" || r.status === "rejected";
   return (
     <Link href={`/solicitudes/${r.id}`} className={`item rise ${closed ? "is-muted" : ""}`} style={{ "--i": i } as React.CSSProperties}>
@@ -40,6 +41,11 @@ function Item({ r, view, i, showClaimant = false }: { r: RequestRow; view: Statu
       <span className="item-end">
         <span className="item-amount">{shortArs(r.amount_cents)}</span>
         <span className={`item-status ${toneClass(view.tone)}`}>{view.label}</span>
+        {auto && (
+          <span className="item-auto">
+            <span className="agent-dot" aria-hidden /> Pagó el agente
+          </span>
+        )}
       </span>
     </Link>
   );
@@ -67,7 +73,10 @@ export default async function EventoPage({ searchParams }: { searchParams: Promi
 
   async function OrganizerHome() {
     const budget = getBudget(db);
-    const digest = agentDigest(requests);
+    const limitCents = repo.getAutoPayLimitCents(db);
+    const day = repo.autoAuthorizedSince(db, new Date(Date.now() - 24 * 3600 * 1000).toISOString());
+    const digest = agentDigest(requests, { ...day, limitCents, capCents: repo.getAutoPayDailyCap(db).cents });
+    const autoIds = repo.autoAuthorizedRequestIds(db);
     const live = budget.committedCents - budget.paidCents;
     const wallet = await walletInfo(getAgentAddress());
     // Lo pagable de verdad: el menor entre el presupuesto libre y el saldo real de wARS (menos lo ya autorizado).
@@ -113,6 +122,7 @@ export default async function EventoPage({ searchParams }: { searchParams: Promi
           </div>
         </section>
 
+        <AutoRefresh ms={15_000} />
         {requests.length > 0 && (
           <div className={`agent-digest rise is-${digest.focus}`} style={{ marginTop: 24 }} role="status">
             <span className="agent-dot" aria-hidden />
@@ -147,7 +157,7 @@ export default async function EventoPage({ searchParams }: { searchParams: Promi
                 </SectionLabel>
                 <div className="list">
                   {rows.map((r) => (
-                    <Item key={r.id} r={r} view={orgStatus(r)} i={n++} showClaimant />
+                    <Item key={r.id} r={r} view={orgStatus(r)} i={n++} showClaimant auto={autoIds.has(r.id)} />
                   ))}
                 </div>
               </section>
@@ -159,6 +169,7 @@ export default async function EventoPage({ searchParams }: { searchParams: Promi
   }
 
   function CollaboratorHome() {
+    const collabAuto = repo.autoAuthorizedRequestIds(db);
     const known = requests.filter((r) => r.amount_cents != null);
     const paid = known.filter((r) => r.status === "reimbursed").reduce((s, r) => s + r.amount_cents!, 0);
     const owed = known.filter((r) => r.status !== "reimbursed" && r.status !== "rejected").reduce((s, r) => s + r.amount_cents!, 0);
@@ -188,7 +199,7 @@ export default async function EventoPage({ searchParams }: { searchParams: Promi
             <SectionLabel>Tus gastos</SectionLabel>
             <div className="list">
               {requests.map((r) => (
-                <Item key={r.id} r={r} view={collabStatus(r)} i={n++} />
+                <Item key={r.id} r={r} view={collabStatus(r)} i={n++} auto={collabAuto.has(r.id) && r.status === "reimbursed"} />
               ))}
             </div>
           </section>

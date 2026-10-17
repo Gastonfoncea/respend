@@ -48,3 +48,18 @@ test("pagos inciertos o fallidos piden atención del organizador", () => {
   assert.equal(d.counts.review, 1);
   assert.equal(d.counts.paying, 1);
 });
+
+test("cuenta lo que el agente pagó solo hoy y avisa al llegar al tope", () => {
+  const base = { limitCents: 10000, capCents: 30000 };
+  assert.equal(
+    agentDigest([req("analyzed", "approve")], { ...base, count: 2, cents: 20000 }).sentence,
+    "Hoy pagué solo 2 gastos ($ 200 de $ 300 del tope). Revisé 1 gasto abierto: 1 listo para pagar.",
+  );
+  assert.equal(
+    agentDigest([], { ...base, count: 3, cents: 30000 }).sentence,
+    "Hoy pagué solo 3 gastos ($ 300 de $ 300 del tope). Llegué al tope: lo que sigue te espera. Todo al día: no hay gastos pendientes.",
+  );
+  // Apagado o sin pagos hoy: no agrega nada.
+  assert.equal(agentDigest([], { ...base, limitCents: 0, count: 0, cents: 0 }).sentence, "Todo al día: no hay gastos pendientes.");
+  assert.equal(agentDigest([], { ...base, count: 0, cents: 0 }).sentence, "Todo al día: no hay gastos pendientes.");
+});

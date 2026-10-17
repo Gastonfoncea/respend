@@ -20,6 +20,9 @@ import {
   retryAnalysisAction,
 } from "../../actions/requests.ts";
 import AppShell from "../../components/AppShell.tsx";
+import AutoRefresh from "../../components/AutoRefresh.tsx";
+import { AgentPaidHero, AgentPaying, AutoPayReasons } from "../../components/AgentPaid.tsx";
+import { autoAuthorizationOf } from "@/lib/autopay.ts";
 import CopyAddress from "../../components/CopyAddress.tsx";
 import Flash from "../../components/Flash.tsx";
 import HoldButton from "../../components/HoldButton.tsx";
@@ -114,6 +117,18 @@ export default async function SolicitudPage({
   };
   const hasAlerts = alerts.dupFile.length + alerts.dupData.length + alerts.suspicious.length + alerts.missing.length > 0;
 
+  // Pago automático: lo autorizó el agente (el código) y el pago corre en segundo plano.
+  const autoAuth = autoAuthorizationOf(auths);
+  // Si el pago en segundo plano falló antes de empezar o nunca arrancó (por ejemplo, un reinicio),
+  // deja de mostrarse "pagando" y el organizador ve el botón para pagar a mano.
+  const autoError = autoAuth != null && audit.some((x) => x.action === "auto_pay_error" && x.created_at >= autoAuth.created_at);
+  const autoStale = autoAuth != null && r.status === "authorized" && Date.now() - Date.parse(autoAuth.created_at) > 90_000;
+  const autoPaying = autoAuth != null && (r.status === "paying" || (r.status === "authorized" && !autoError && !autoStale));
+  const autoPaid = autoAuth != null && r.status === "reimbursed";
+  const paidSeconds =
+    autoPaid && latest?.updated_at ? Math.max(1, Math.round((Date.parse(latest.updated_at) - Date.parse(autoAuth!.created_at)) / 1000)) : null;
+  const autoLimit = parse<{ limit_cents?: number }>(audit.find((x) => x.action === "auto_authorized")?.detail ?? null, {}).limit_cents ?? null;
+
   // ---------- piezas ----------
 
   const agentRow = (
@@ -182,6 +197,7 @@ export default async function SolicitudPage({
   return (
     <AppShell mode={cfg.paymentMode} role={session.role} eventName={policy.name} tabs={false}>
       <Flash error={sp.error} ok={sp.ok} />
+      <AutoRefresh ms={2000} active={autoPaying || r.status === "paying"} />
       <TopBar title={`Solicitud ${pad(r.id)}`} mode={cfg.paymentMode} />
       {r.ai_fake === 1 && <div className="banner-fake">Análisis de prueba · sin IA</div>}
       <div className="detail">
@@ -199,7 +215,15 @@ export default async function SolicitudPage({
   // ---------- organizador ----------
 
   function organizerView() {
-    const head = paymentHead(r!, latest, cfg.paymentMode) ?? (
+    const head = autoPaying ? (
+      <AgentPaying cents={r!.amount_cents} recipient={r!.recipient} mainnet={cfg.paymentMode === "mainnet"} />
+    ) : autoPaid ? (
+      <>
+        <AgentPaidHero cents={r!.amount_cents} payment={latest} seconds={paidSeconds} who="organizer" />
+        <div className="sp-16" />
+        <AutoPayReasons limitCents={autoLimit} />
+      </>
+    ) : paymentHead(r!, latest, cfg.paymentMode) ?? (
       <>
         <p className="label">Pide</p>
         <Amount cents={r!.amount_cents} />
@@ -281,6 +305,7 @@ export default async function SolicitudPage({
 
   function organizerActions() {
     const id = r!.id;
+    if (autoPaying) return null;
     const askSheet = canAsk && (
       <Sheet triggerClassName="btn btn-sq" triggerLabel="Pedir aclaración" trigger={<Icon name="msg" size={20} />}>
         <h2 className="display h2">Preguntale al colaborador</h2>
@@ -406,6 +431,9 @@ export default async function SolicitudPage({
 
   function collaboratorView() {
     const req = r!;
+    if (autoPaying) {
+      return <AgentPaying cents={req.amount_cents} recipient={req.recipient} mainnet={cfg.paymentMode === "mainnet"} />;
+    }
     if (req.status === "needs_info") {
       const asked = [...thread].reverse().find((c) => c.author !== "collaborator");
       return (
@@ -445,17 +473,21 @@ export default async function SolicitudPage({
     if (req.status === "reimbursed") {
       return (
         <>
-          <section className="stack gap-4" style={{ paddingTop: 16 }}>
-            <StateBadge kind="ok" />
-            <div className="sp-16" />
-            <p className="label">Cobraste</p>
-            <Amount cents={req.amount_cents} />
-            {req.amount_cents != null && (
-              <p className="mono dim">
-                {formatWars(centsToWei(req.amount_cents))} · {req.merchant ?? req.description}
-              </p>
-            )}
-          </section>
+          {autoPaid ? (
+            <AgentPaidHero cents={req.amount_cents} payment={latest} seconds={paidSeconds} who="collaborator" />
+          ) : (
+            <section className="stack gap-4" style={{ paddingTop: 16 }}>
+              <StateBadge kind="ok" />
+              <div className="sp-16" />
+              <p className="label">Cobraste</p>
+              <Amount cents={req.amount_cents} />
+              {req.amount_cents != null && (
+                <p className="mono dim">
+                  {formatWars(centsToWei(req.amount_cents))} · {req.merchant ?? req.description}
+                </p>
+              )}
+            </section>
+          )}
           <section className="rise" style={{ marginTop: 22, "--i": 2 } as React.CSSProperties}>
             <Rows>
               <Row k="Llegó a">
