@@ -114,6 +114,14 @@ export async function reconcile(db: DB, chain: ChainClient | null, paymentId: nu
     }
     const latest = await chain.getTransactionCount(getAddress(p.from_address), "latest");
     if (latest > p.nonce) {
+      // El nonce pudo consumirlo NUESTRA transacción y el nodo que respondió getReceipt estar atrasado.
+      // Antes de declararla fallida (lo que habilita re-autorizar y pagar de nuevo), volver a buscarla.
+      const late = await chain.getReceipt(hash);
+      if (late) {
+        const txInfo = await chain.getTransaction(hash).catch(() => null);
+        const status = applyReceipt(db, p.id, late, txInfo?.input ?? null);
+        return done(status, "Se encontró el receipt en la cadena (segunda consulta).");
+      }
       tx(db, () =>
         failPayment(
           db,

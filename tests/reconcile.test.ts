@@ -80,3 +80,19 @@ test("(e) error de red al difundir → uncertain, nunca failed", async () => {
   const r = await reconcile(ctx.db, { ...chain, getReceipt: async () => { throw new Error("ECONNRESET"); } } as never, res.paymentId);
   assert.equal(r.status, "uncertain");
 });
+
+test("(f) nodo atrasado: primera consulta sin receipt pero el nonce ya avanzó → re-consulta y confirma, nunca failed", async () => {
+  const { ctx, id } = await authorizedRequest();
+  const { chain, pay } = mainnetSetup(ctx.db);
+  chain.autoMine = false;
+  const res = await pay(id);
+  chain.mineAll(); // la transacción SÍ se minó y el nonce avanzó
+  let receiptCalls = 0;
+  let txCalls = 0;
+  const lagging = Object.create(chain);
+  lagging.getReceipt = async (h: `0x${string}`) => (receiptCalls++ === 0 ? null : chain.getReceipt(h));
+  lagging.getTransaction = async (h: `0x${string}`) => (txCalls++ === 0 ? null : chain.getTransaction(h));
+  const r = await reconcile(ctx.db, lagging, res.paymentId);
+  assert.equal(r.status, "confirmed");
+  assert.equal(repo.getRequest(ctx.db, id)!.status, "reimbursed");
+});
