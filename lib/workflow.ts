@@ -54,6 +54,9 @@ function sniffMime(bytes: Uint8Array): string | null {
   return null;
 }
 
+/** Categorías que entiende el schema del agente (lib/agent/prompt.ts). */
+export const KNOWN_CATEGORIES = ["transporte", "materiales"] as const;
+
 const EXT: Record<string, string> = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp" };
 
 // --- política ---
@@ -63,6 +66,8 @@ export function updatePolicy(ctx: Ctx, session: Session | null, p: Omit<Policy, 
   if (!p.name.trim()) throw new WorkflowError("El evento necesita un nombre.");
   if (!isIsoDate(p.startDate) || !isIsoDate(p.endDate) || p.startDate > p.endDate) throw new WorkflowError("Fechas inválidas.");
   if (!p.categories.length) throw new WorkflowError("Tiene que haber al menos una categoría.");
+  const unknown = p.categories.filter((c) => !(KNOWN_CATEGORIES as readonly string[]).includes(c));
+  if (unknown.length) throw new WorkflowError(`Categorías no soportadas por el agente: ${unknown.join(", ")}.`);
   assertCents(p.capPerReceiptCents);
   assertCents(p.budgetCents);
   tx(ctx.db, () => {
@@ -101,8 +106,8 @@ export function submitExpense(ctx: Ctx, session: Session | null, input: SubmitIn
   const sha = sha256Hex(bytes);
   fs.mkdirSync(ctx.receiptsDir, { recursive: true });
   const fileName = `${sha}.${EXT[sniffed]}`;
-  const full = path.join(ctx.receiptsDir, fileName);
-  if (!fs.existsSync(full)) fs.writeFileSync(full, bytes, { mode: 0o600 });
+  const full = path.join(/*turbopackIgnore: true*/ ctx.receiptsDir, fileName);
+  if (!fs.existsSync(/*turbopackIgnore: true*/ full)) fs.writeFileSync(full, bytes, { mode: 0o600 });
 
   return tx(ctx.db, () => {
     const id = repo.insertRequest(ctx.db, { description, recipient, filePath: fileName, fileSha256: sha, mime: sniffed });

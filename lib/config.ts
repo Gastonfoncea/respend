@@ -98,7 +98,7 @@ export function readAiConfig(env: Env = process.env): AiConfig {
 export function readConfig(env: Env = process.env): AppConfig {
   const paymentMode: PaymentMode = env.PAYMENT_MODE === "mainnet" ? "mainnet" : "simulated";
   const aiMode: AiMode = env.AI_MODE === "fake" ? "fake" : "real";
-  const dataDir = path.resolve(nonEmpty(env.DATA_DIR) ?? path.join(process.cwd(), "data"));
+  const dataDir = path.resolve(/*turbopackIgnore: true*/ nonEmpty(env.DATA_DIR) ?? path.join(process.cwd(), "data"));
   return {
     paymentMode,
     aiMode,

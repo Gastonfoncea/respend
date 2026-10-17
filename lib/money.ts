@@ -123,3 +123,12 @@ export function centsToDecimalString(cents: number): string {
   const c = BigInt(cents);
   return `${c / 100n}.${(c % 100n).toString().padStart(2, "0")}`;
 }
+
+/** Saldo de un token de 18 decimales, truncado (no redondeado) a `shown` decimales: "1.234,5678 CELO". */
+export function formatBalance(wei: bigint, symbol: string, shown = 2): string {
+  if (wei < 0n) throw new MoneyParseError("Monto negativo");
+  const unit = 10n ** 18n;
+  const whole = groupThousands((wei / unit).toString());
+  const frac = (wei % unit).toString().padStart(18, "0").slice(0, shown);
+  return `${whole},${frac} ${symbol}`;
+}

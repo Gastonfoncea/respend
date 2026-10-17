@@ -1,0 +1,38 @@
+// Adaptador de sesiones para Next (cookies + redirect). La lógica pura está en lib/auth.ts.
+import { cookies, headers } from "next/headers";
+import { redirect } from "next/navigation";
+import { SESSION_COOKIE, SESSION_MAX_AGE_S, signSession, verifySession } from "./auth.ts";
+import { readConfig } from "./config.ts";
+import type { Role, Session } from "./types.ts";
+
+export async function getSession(): Promise<Session | null> {
+  const store = await cookies();
+  return verifySession(store.get(SESSION_COOKIE)?.value, readConfig().sessionSecret);
+}
+
+/** Para páginas: si no hay sesión o el rol no alcanza, redirige. */
+export async function requireRole(roles: Role[] = ["organizer", "collaborator"]): Promise<Session> {
+  const s = await getSession();
+  if (!s) redirect("/");
+  if (!roles.includes(s.role)) redirect("/evento?error=" + encodeURIComponent("Tu rol no puede ver esa página."));
+  return s;
+}
+
+export async function setSessionCookie(role: Role): Promise<void> {
+  const secret = readConfig().sessionSecret;
+  if (!secret) throw new Error("Falta SESSION_SECRET en el entorno.");
+  const store = await cookies();
+  // Secure solo si la request llegó por HTTPS (en localhost con `npm start` es HTTP).
+  const proto = (await headers()).get("x-forwarded-proto");
+  store.set(SESSION_COOKIE, signSession({ role, issuedAt: Date.now() }, secret), {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: proto === "https",
+    path: "/",
+    maxAge: SESSION_MAX_AGE_S,
+  });
+}
+
+export async function clearSessionCookie(): Promise<void> {
+  (await cookies()).delete(SESSION_COOKIE);
+}
