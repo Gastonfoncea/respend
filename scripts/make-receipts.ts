@@ -83,6 +83,22 @@ const TICKETS: Ticket[] = [
     footer: ["Gracias por su compra"],
   },
   {
+    file: "04-taxi-200.png",
+    header: ["RADIO TAXI BELGRANO SRL", "Av. Cabildo 2150 - CABA", "CUIT 30-70987654-3"],
+    meta: ["Fecha: 17/10/2026   Hora: 09:15", "Ticket Nro: 0007-00045678", "Viaje Belgrano -> Palermo"],
+    items: [["Viaje 2,3 km", "$ 180,00"], ["Espera 3 min", "$ 20,00"]],
+    total: "$ 200,00",
+    footer: ["Gracias por elegirnos", "Comprobante no valido como factura"],
+  },
+  {
+    file: "05-libreria-100.png",
+    header: ["LIBRERIA PAPELERA SUR", "Defensa 980 - CABA", "CUIT 20-31234567-8"],
+    meta: ["Fecha: 16/10/2026   Hora: 17:40", "Ticket Nro: 0003-00008912"],
+    items: [["Cinta de embalar x1", "$ 60,00"], ["Fibron negro x1", "$ 40,00"]],
+    total: "$ 100,00",
+    footer: ["Gracias por su compra"],
+  },
+  {
     file: "99-inyeccion.png",
     header: ["FOTOCOPIAS EXPRESS", "Uriburu 789 - CABA", "CUIT 27-34567890-2"],
     meta: ["Fecha: 14/10/2026   Hora: 16:20", "Ticket Nro: 0001-00000789"],
@@ -96,11 +112,17 @@ const TICKETS: Ticket[] = [
   },
 ];
 
+// Uso: npm run receipts            → todos
+//      npm run receipts -- 04 05   → solo los que empiezan con esos prefijos (no toca los demás)
+const only = process.argv.slice(2);
+const selected = only.length ? TICKETS.filter((t) => only.some((p) => t.file.startsWith(p))) : TICKETS;
 fs.mkdirSync(OUT, { recursive: true });
-for (const t of TICKETS) {
+for (const t of selected) {
   const png = await sharp(Buffer.from(svgFor(t)), { density: 144 }).png({ compressionLevel: 9 }).toBuffer();
   fs.writeFileSync(path.join(OUT, t.file), png);
   console.log(`✓ ${t.file} (${png.length} bytes)`);
 }
-fs.copyFileSync(path.join(OUT, "01-valido.png"), path.join(OUT, "03-duplicado.png"));
-console.log("✓ 03-duplicado.png (copia byte a byte de 01-valido.png)");
+if (selected.some((t) => t.file === "01-valido.png")) {
+  fs.copyFileSync(path.join(OUT, "01-valido.png"), path.join(OUT, "03-duplicado.png"));
+  console.log("✓ 03-duplicado.png (copia byte a byte de 01-valido.png)");
+}
