@@ -226,3 +226,14 @@ export async function setAutoPayLimitAction(fd: FormData) {
   revalidatePath("/agente");
   redirect(target);
 }
+
+/** Vista previa del agente: lee el ticket antes de enviar. No guarda nada. */
+export async function previewExpenseAction(_prev: wf.PreviewResult | null, fd: FormData): Promise<wf.PreviewResult> {
+  try {
+    const file = fd.get("receipt");
+    if (!(file instanceof File) || file.size === 0) return { ok: false, error: "Falta la imagen del comprobante." };
+    return await wf.previewExpense(server.ctx(), await getSession(), { bytes: new Uint8Array(await file.arrayBuffer()) });
+  } catch (err) {
+    return { ok: false, error: errorMessage(err) };
+  }
+}

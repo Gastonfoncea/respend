@@ -12,7 +12,7 @@ function mb(bytes: number): string {
   return (bytes / (1024 * 1024)).toFixed(1).replace(".", ",");
 }
 
-export default function ReceiptPicker() {
+export default function ReceiptPicker({ onFile }: { onFile?: (file: File | null) => void } = {}) {
   const input = useRef<HTMLInputElement>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -31,6 +31,7 @@ export default function ReceiptPicker() {
       if (old) URL.revokeObjectURL(old);
       return msg ? null : URL.createObjectURL(f);
     });
+    onFile?.(msg ? null : f);
   }
 
   function setFiles(files: FileList) {
@@ -114,7 +115,7 @@ export default function ReceiptPicker() {
   );
 }
 
-function Reading({ preview }: { preview: string | null }) {
+export function Reading({ preview, title = "Leyendo el ticket" }: { preview: string | null; title?: string }) {
   const rows: [string, number][] = [
     ["Comercio", 110],
     ["Fecha", 80],
@@ -131,7 +132,7 @@ function Reading({ preview }: { preview: string | null }) {
       </div>
       <div className="reading-body">
         <div className="between">
-          <h2 className="display h2">Leyendo el ticket</h2>
+          <h2 className="display h2">{title}</h2>
           <span className="spin t-green" aria-hidden />
         </div>
         <div>
