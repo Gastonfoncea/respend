@@ -81,21 +81,30 @@ export function updatePolicy(ctx: Ctx, session: Session | null, p: Omit<Policy, 
 
 // --- wallet de cobro del colaborador ---
 
+/** Nombre visible del colaborador: sin caracteres de control, espacios colapsados, 2 a 60 caracteres. */
+export function normalizeClaimantName(raw: string): string | null {
+  const name = raw.replace(/[\u0000-\u001f\u007f]/g, "").replace(/\s+/g, " ").trim();
+  return name.length >= 2 && name.length <= 60 ? name : null;
+}
+
 /**
- * El colaborador define a qué wallet le pagan. Las solicitudes ya presentadas conservan la wallet que tenían
- * (el organizador autorizó ese destinatario exacto); la nueva aplica a los gastos que presente después.
+ * El colaborador define quién es (nombre declarado) y a qué wallet le pagan. Las solicitudes ya presentadas
+ * conservan el nombre y la wallet que tenían (el organizador aprobó ese destinatario exacto);
+ * lo nuevo aplica a los gastos que presente después.
  */
-export function setCollaboratorWallet(ctx: Ctx, session: Session | null, address: string): string {
+export function setCollaboratorProfile(ctx: Ctx, session: Session | null, input: { name: string; wallet: string }): repo.CollaboratorProfile {
   const s = assertRole(session, ["collaborator"]);
-  const wallet = normalizeRecipient(address);
+  const name = normalizeClaimantName(input.name);
+  if (!name) throw new WorkflowError("Escribí tu nombre (entre 2 y 60 caracteres).");
+  const wallet = normalizeRecipient(input.wallet);
   if (!wallet) throw new WorkflowError("Esa no es una dirección válida (0x… de 40 caracteres hex).");
   return tx(ctx.db, () => {
-    const before = repo.getCollaboratorWallet(ctx.db);
-    if (before !== wallet) {
-      repo.setCollaboratorWallet(ctx.db, wallet);
-      repo.audit(ctx.db, null, actorName(s), "collaborator_wallet_updated", { before, after: wallet });
+    const before = repo.getCollaboratorProfile(ctx.db);
+    if (before?.name !== name || before?.wallet !== wallet) {
+      repo.setCollaboratorProfile(ctx.db, { name, wallet });
+      repo.audit(ctx.db, null, actorName(s), "collaborator_profile_updated", { before, after: { name, wallet } });
     }
-    return wallet;
+    return { name, wallet };
   });
 }
 
@@ -116,7 +125,8 @@ export function submitExpense(ctx: Ctx, session: Session | null, input: SubmitIn
   const recipient = normalizeRecipient(input.recipient);
   if (!recipient) throw new WorkflowError("La wallet de destino no es una dirección válida (0x… de 40 caracteres hex).");
   // Si el colaborador configuró su wallet de cobro, el destinatario tiene que ser esa: no se acepta otra.
-  const profileWallet = repo.getCollaboratorWallet(ctx.db);
+  const profile = repo.getCollaboratorProfile(ctx.db);
+  const profileWallet = profile?.wallet ?? null;
   if (profileWallet && profileWallet !== recipient) {
     throw new WorkflowError("La wallet de cobro tiene que ser la de tu perfil. Cambiala desde \"Mi wallet\".");
   }
@@ -135,8 +145,9 @@ export function submitExpense(ctx: Ctx, session: Session | null, input: SubmitIn
   if (!fs.existsSync(/*turbopackIgnore: true*/ full)) fs.writeFileSync(full, bytes, { mode: 0o600 });
 
   return tx(ctx.db, () => {
-    const id = repo.insertRequest(ctx.db, { description, recipient, filePath: fileName, fileSha256: sha, mime: sniffed });
-    repo.audit(ctx.db, id, actorName(s), "submitted", { file_sha256: sha, recipient });
+    const claimantName = profile?.name ?? null;
+    const id = repo.insertRequest(ctx.db, { description, recipient, claimantName, filePath: fileName, fileSha256: sha, mime: sniffed });
+    repo.audit(ctx.db, id, actorName(s), "submitted", { file_sha256: sha, recipient, claimant_name: claimantName });
     return id;
   });
 }

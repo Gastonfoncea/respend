@@ -17,7 +17,7 @@ export default function NavLinks({ variant, role }: { variant: "side" | "tab"; r
       {LINKS.map((l) => (
         <Link key={l.href} href={l.href} className={variant === "side" ? "side-link" : "tab"} aria-current={l.match(path) ? "page" : undefined}>
           <Icon name={l.icon} size={variant === "side" ? 18 : 22} />
-          <span>{l.href === "/wallet" && role === "collaborator" ? "Mi wallet" : l.label}</span>
+          <span>{l.href === "/wallet" && role === "collaborator" ? "Mi perfil" : l.label}</span>
         </Link>
       ))}
     </>

@@ -70,15 +70,15 @@ export function listRequests(db: DB): RequestRow[] {
 
 export function insertRequest(
   db: DB,
-  r: { description: string; recipient: string; filePath: string; fileSha256: string; mime: string },
+  r: { description: string; recipient: string; claimantName: string | null; filePath: string; fileSha256: string; mime: string },
 ): number {
   const now = nowIso();
   const res = db
     .prepare(
-      `INSERT INTO requests (created_at, updated_at, description, recipient, file_path, file_sha256, mime, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'submitted')`,
+      `INSERT INTO requests (created_at, updated_at, description, recipient, claimant_name, file_path, file_sha256, mime, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'submitted')`,
     )
-    .run(now, now, r.description, r.recipient, r.filePath, r.fileSha256, r.mime);
+    .run(now, now, r.description, r.recipient, r.claimantName, r.filePath, r.fileSha256, r.mime);
   return Number(res.lastInsertRowid);
 }
 
@@ -269,13 +269,22 @@ export function listAudit(db: DB, requestId: number): AuditRow[] {
 
 // --- perfil del colaborador ---
 
-export function getCollaboratorWallet(db: DB): string | null {
-  const row = db.prepare("SELECT wallet FROM collaborator_profile WHERE id = 1").get() as { wallet: string } | undefined;
-  return row?.wallet ?? null;
+export interface CollaboratorProfile {
+  name: string | null;
+  wallet: string;
 }
 
-export function setCollaboratorWallet(db: DB, wallet: string): void {
+export function getCollaboratorProfile(db: DB): CollaboratorProfile | null {
+  const row = db.prepare("SELECT name, wallet FROM collaborator_profile WHERE id = 1").get() as CollaboratorProfile | undefined;
+  return row ? { name: row.name ?? null, wallet: row.wallet } : null;
+}
+
+export function getCollaboratorWallet(db: DB): string | null {
+  return getCollaboratorProfile(db)?.wallet ?? null;
+}
+
+export function setCollaboratorProfile(db: DB, p: { name: string | null; wallet: string }): void {
   db.prepare(
-    "INSERT INTO collaborator_profile (id, wallet, updated_at) VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET wallet = excluded.wallet, updated_at = excluded.updated_at",
-  ).run(wallet, nowIso());
+    "INSERT INTO collaborator_profile (id, name, wallet, updated_at) VALUES (1, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name = excluded.name, wallet = excluded.wallet, updated_at = excluded.updated_at",
+  ).run(p.name, p.wallet, nowIso());
 }
