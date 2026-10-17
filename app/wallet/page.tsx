@@ -13,6 +13,7 @@ import Icon from "../components/Icon.tsx";
 import RefreshButton from "../components/RefreshButton.tsx";
 import { GroupedAddress, shortArs } from "../components/ui.tsx";
 import { MIN_CELO_WEI, SUGGESTED_CELO, walletInfo } from "../components/wallet.ts";
+import CollaboratorWallet from "./CollaboratorWallet.tsx";
 
 export const dynamic = "force-dynamic";
 
@@ -54,6 +55,11 @@ const bal = (v: bigint | null, decimals = 2) => (v == null ? "—" : formatBalan
 export default async function WalletPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const session = await requireRole();
   const sp = await searchParams;
+  // El colaborador solo ve su wallet de cobro. La wallet del agente (saldos, fondeo, gas) es del organizador.
+  if (session.role !== "organizer") {
+    const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v);
+    return <CollaboratorWallet session={session} error={one(sp.error)} ok={one(sp.ok)} />;
+  }
   const db = server.db();
   const cfg = server.config();
   const policy = repo.getPolicy(db);

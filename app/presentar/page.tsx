@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { requireRole } from "@/lib/session.ts";
 import * as server from "@/lib/server.ts";
 import * as repo from "@/lib/repo.ts";
@@ -15,7 +16,9 @@ export default async function PresentarPage({ searchParams }: { searchParams: Pr
   const session = await requireRole(["collaborator"]);
   const sp = await searchParams;
   const cfg = server.config();
-  const policy = repo.getPolicy(server.db());
+  const db = server.db();
+  const policy = repo.getPolicy(db);
+  const wallet = repo.getCollaboratorWallet(db);
   const missingKey = cfg.ai.apiKey == null && cfg.aiMode === "real";
 
   return (
@@ -38,26 +41,32 @@ export default async function PresentarPage({ searchParams }: { searchParams: Pr
           <span className="field-label">¿Qué fue?</span>
           <input className="input" name="description" maxLength={1000} required placeholder="Ej.: remís para llevar el proyector" />
         </label>
-        <label className="field rise" style={{ "--i": 2 } as React.CSSProperties}>
-          <span className="field-label">Cobrar en</span>
-          <input
-            className="input mono"
-            name="recipient"
-            required
-            pattern="^0x[0-9a-fA-F]{40}$"
-            defaultValue={cfg.demoCollaboratorAddress ?? ""}
-            placeholder="0x…"
-            spellCheck={false}
-            autoComplete="off"
-          />
-          <span className="field-help">Recibís wARS en Celo, 1 wARS = 1 peso. No se puede cambiar después de enviar.</span>
-        </label>
+        <div className="field rise" style={{ "--i": 2 } as React.CSSProperties}>
+          <span className="field-label">Cobrás en</span>
+          {wallet ? (
+            <>
+              <span className="input mono" style={{ overflowWrap: "anywhere" }}>
+                {wallet}
+              </span>
+              <span className="field-help">
+                Tu wallet de cobro. Recibís wARS en Celo, 1 wARS = 1 peso. <Link href="/wallet">Cambiarla</Link>
+              </span>
+            </>
+          ) : (
+            <div className="notice notice-amb">
+              <Icon name="warn" size={18} stroke={2} />
+              <span>
+                Primero cargá tu wallet de cobro. <Link href="/wallet">Ir a Mi wallet</Link>
+              </span>
+            </div>
+          )}
+        </div>
         <p className="field-help rise" style={{ "--i": 3 } as React.CSSProperties}>
           Se reembolsa {policy.categories.map((c) => c[0].toUpperCase() + c.slice(1)).join(" y ")} del {policy.startDate} al {policy.endDate},
           hasta {shortArs(policy.capPerReceiptCents)} por ticket.
         </p>
         <div className="actions">
-          <SubmitButton pendingText="Enviando…">
+          <SubmitButton pendingText="Enviando…" disabled={!wallet}>
             <Icon name="up" size={20} stroke={2} /> Enviar al agente
           </SubmitButton>
         </div>

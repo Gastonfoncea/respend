@@ -21,9 +21,12 @@ export async function submitExpenseAction(fd: FormData) {
     const file = fd.get("receipt");
     if (!(file instanceof File) || file.size === 0) throw new wf.WorkflowError("Falta la imagen del comprobante.");
     const ctx = server.ctx();
+    // El destinatario sale siempre del perfil del colaborador, nunca del formulario.
+    const recipient = repo.getCollaboratorWallet(ctx.db);
+    if (!recipient) throw new wf.WorkflowError("Primero cargá tu wallet de cobro en \"Mi wallet\".");
     const id = wf.submitExpense(ctx, session, {
       description: str(fd, "description"),
-      recipient: str(fd, "recipient"),
+      recipient,
       file: { bytes: new Uint8Array(await file.arrayBuffer()), mime: file.type },
     });
     await wf.analyzeRequest(ctx, id);
@@ -182,5 +185,18 @@ export async function updatePolicyAction(fd: FormData) {
     target = withQuery(target, "error", errorMessage(err));
   }
   revalidatePath("/evento");
+  redirect(target);
+}
+
+export async function setMyWalletAction(fd: FormData) {
+  let target: string;
+  try {
+    wf.setCollaboratorWallet(server.ctx(), await getSession(), str(fd, "wallet"));
+    target = withQuery("/wallet", "ok", "Wallet guardada. Los próximos reembolsos van a esta dirección.");
+  } catch (err) {
+    target = withQuery("/wallet", "error", errorMessage(err));
+  }
+  revalidatePath("/wallet");
+  revalidatePath("/presentar");
   redirect(target);
 }

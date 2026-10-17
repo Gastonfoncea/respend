@@ -266,3 +266,16 @@ export function audit(db: DB, requestId: number | null, actor: string, action: s
 export function listAudit(db: DB, requestId: number): AuditRow[] {
   return db.prepare("SELECT * FROM audit_log WHERE request_id = ? ORDER BY id").all(requestId) as unknown as AuditRow[];
 }
+
+// --- perfil del colaborador ---
+
+export function getCollaboratorWallet(db: DB): string | null {
+  const row = db.prepare("SELECT wallet FROM collaborator_profile WHERE id = 1").get() as { wallet: string } | undefined;
+  return row?.wallet ?? null;
+}
+
+export function setCollaboratorWallet(db: DB, wallet: string): void {
+  db.prepare(
+    "INSERT INTO collaborator_profile (id, wallet, updated_at) VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET wallet = excluded.wallet, updated_at = excluded.updated_at",
+  ).run(wallet, nowIso());
+}
