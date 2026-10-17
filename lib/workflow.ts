@@ -15,7 +15,7 @@ import { validateAiOutput, type AiOutput } from "./agent/prompt.ts";
 import type { Analyzer } from "./agent/analyze.ts";
 import { bindingFor, bindingHash } from "./binding.ts";
 import { parseArsToCents, assertCents } from "./money.ts";
-import type { Policy, ReceiptFields, RequestRow, RequestStatus, Session } from "./types.ts";
+import type { Check, Policy, ReceiptFields, RequestRow, RequestStatus, Session } from "./types.ts";
 
 export class WorkflowError extends Error {}
 
@@ -46,7 +46,7 @@ export function currentFields(r: RequestRow): ReceiptFields {
   };
 }
 
-function sniffMime(bytes: Uint8Array): string | null {
+export function sniffMime(bytes: Uint8Array): string | null {
   const b = Buffer.from(bytes.subarray(0, 12));
   if (b.length >= 8 && b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "image/png";
   if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return "image/jpeg";
@@ -409,4 +409,124 @@ export function authorize(ctx: Ctx, session: Session | null, requestId: number, 
     });
     return id;
   });
+}
+
+// --- vista previa del agente (antes de enviar) ---
+
+export type PreviewVerdict = "fits" | "outside" | "unclear" | "review";
+
+export type PreviewResult =
+  | {
+      ok: true;
+      fields: ReceiptFields;
+      categoryReasoning: string;
+      verdict: PreviewVerdict;
+      headline: string;
+      /** Reglas que el colaborador puede entender antes de enviar (sin la wallet: esa sale del perfil). */
+      checks: Check[];
+      duplicateOf: number[];
+      suspicious: string[];
+      /** Una sola pregunta: para qué fue el gasto (o lo que el agente necesite saber). */
+      question: string;
+      agentText: string | null;
+      fake: boolean;
+    }
+  | { ok: false; error: string };
+
+const PREVIEW_RULES: Check["rule"][] = [
+  "date_in_range",
+  "currency_is_ars",
+  "amount_parsed",
+  "amount_le_cap",
+  "category_allowed",
+  "budget_available",
+  "duplicate_file",
+  "duplicate_data",
+];
+
+/**
+ * El agente lee el ticket ANTES de que el colaborador lo envíe. No guarda nada (ni archivo ni solicitud):
+ * es solo una ayuda para evitar rechazos. La evaluación que vale es la que corre al enviar.
+ */
+export async function previewExpense(ctx: Ctx, session: Session | null, file: { bytes: Uint8Array }): Promise<PreviewResult> {
+  assertRole(session, ["collaborator"]);
+  const { bytes } = file;
+  if (!bytes.length) throw new WorkflowError("Falta la imagen del comprobante.");
+  if (bytes.length > MAX_RECEIPT_BYTES) throw new WorkflowError("La imagen supera los 4 MB.");
+  const mime = sniffMime(bytes);
+  if (!mime || !(ALLOWED_MIME as readonly string[]).includes(mime)) throw new WorkflowError("La imagen tiene que ser JPEG, PNG o WebP.");
+
+  const policy = repo.getPolicy(ctx.db);
+  const sha = sha256Hex(bytes);
+  const res = await ctx.analyzer({ image: Buffer.from(bytes), mime, fileSha256: sha, description: "", clarifications: [], policy });
+  if (!res.ok) return { ok: false, error: res.error };
+
+  const ai = res.output;
+  const fields = fieldsFromAi(ai);
+  const duplicates = findDuplicates(ctx.db, -1, sha, fields);
+  const all = evaluateChecks({
+    policy,
+    fields,
+    recipient: "",
+    availableForRequestCents: getBudget(ctx.db).availableCents,
+    duplicates,
+  });
+  const checks = all.filter((c) => PREVIEW_RULES.includes(c.rule));
+  const failed = (rule: Check["rule"]) => checks.find((c) => c.rule === rule)?.ok === false;
+  const unknown = (rule: Check["rule"]) => checks.find((c) => c.rule === rule)?.ok == null;
+  const duplicateOf = [...new Set([...duplicates.file, ...duplicates.data])];
+  const suspicious = ai.suspicious_instructions;
+  const cat = fields.category;
+
+  let verdict: PreviewVerdict;
+  let headline: string;
+  if (duplicateOf.length) {
+    verdict = "review";
+    headline = `Parece el mismo ticket que ya presentaste (#${duplicateOf.join(", #")}).`;
+  } else if (suspicious.length) {
+    verdict = "review";
+    headline = "El ticket trae texto que parece una instrucción. Lo ignoré, pero el organizador lo va a revisar.";
+  } else if (failed("category_allowed")) {
+    verdict = "outside";
+    headline = `Esto no parece ${policy.categories.join(" ni ")}: probablemente no se reembolse.`;
+  } else if (failed("date_in_range")) {
+    verdict = "outside";
+    headline = `La fecha del ticket está fuera del evento (${policy.startDate} a ${policy.endDate}).`;
+  } else if (failed("amount_le_cap")) {
+    verdict = "outside";
+    headline = "El monto supera el tope por ticket.";
+  } else if (failed("currency_is_ars")) {
+    verdict = "outside";
+    headline = "El ticket no está en pesos argentinos.";
+  } else if (failed("budget_available")) {
+    verdict = "outside";
+    headline = "No queda presupuesto suficiente en el evento para este monto.";
+  } else if (unknown("amount_parsed") || unknown("date_in_range") || unknown("category_allowed")) {
+    verdict = "unclear";
+    headline = unknown("amount_parsed")
+      ? "No pude leer bien el monto."
+      : unknown("date_in_range")
+        ? "No pude leer bien la fecha."
+        : "No me queda claro qué se compró.";
+  } else {
+    verdict = "fits";
+    headline = `Entra en ${cat}.`;
+  }
+
+  const question =
+    cat === "indeterminada" && ai.clarification_questions[0] ? ai.clarification_questions[0] : "¿Para qué fue este gasto?";
+
+  return {
+    ok: true,
+    fields,
+    categoryReasoning: ai.category_reasoning,
+    verdict,
+    headline,
+    checks,
+    duplicateOf,
+    suspicious,
+    question,
+    agentText: ai.explanation || null,
+    fake: res.fake,
+  };
 }

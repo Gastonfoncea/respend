@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { requireRole } from "@/lib/session.ts";
+import { agentDigest } from "@/lib/digest.ts";
 import * as server from "@/lib/server.ts";
 import * as repo from "@/lib/repo.ts";
 import { getBudget } from "@/lib/budget.ts";
@@ -66,6 +67,7 @@ export default async function EventoPage({ searchParams }: { searchParams: Promi
 
   async function OrganizerHome() {
     const budget = getBudget(db);
+    const digest = agentDigest(requests);
     const live = budget.committedCents - budget.paidCents;
     const wallet = await walletInfo(getAgentAddress());
     // Lo pagable de verdad: el menor entre el presupuesto libre y el saldo real de wARS (menos lo ya autorizado).
@@ -110,6 +112,16 @@ export default async function EventoPage({ searchParams }: { searchParams: Promi
             <span className="dim-2">Tope {kArs(budget.totalCents)}</span>
           </div>
         </section>
+
+        {requests.length > 0 && (
+          <div className={`agent-digest rise is-${digest.focus}`} style={{ marginTop: 24 }} role="status">
+            <span className="agent-dot" aria-hidden />
+            <span className="stack gap-4">
+              <span className="label">Agente</span>
+              <span>{digest.sentence}</span>
+            </span>
+          </div>
+        )}
 
         {unfunded && (
           <Link href="/wallet" className="notice notice-amb rise" style={{ marginTop: 24 }}>
