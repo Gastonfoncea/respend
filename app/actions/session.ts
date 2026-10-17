@@ -13,7 +13,7 @@ export async function login(fd: FormData) {
   if (role !== "organizer" && role !== "collaborator") redirect(withQuery("/", "error", "Elegí un rol."));
   const expected = role === "organizer" ? cfg.organizerPasscode : cfg.collaboratorPasscode;
   if (!expected) redirect(withQuery("/", "error", `Falta ${role === "organizer" ? "ORGANIZER_PASSCODE" : "COLLABORATOR_PASSCODE"} en el entorno.`));
-  if (!checkPasscode(passcode, expected)) redirect(withQuery("/", "error", "Passcode incorrecto."));
+  if (!checkPasscode(passcode, expected)) redirect(withQuery(`/?role=${role}`, "error", "Código incorrecto. Probá de nuevo."));
   await setSessionCookie(role);
   redirect("/evento");
 }

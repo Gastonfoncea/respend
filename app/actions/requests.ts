@@ -163,7 +163,7 @@ function payMessage(status: string, mode: string): string {
 }
 
 export async function updatePolicyAction(fd: FormData) {
-  let target = "/evento";
+  let target = "/evento/politica";
   try {
     const categories = str(fd, "categories")
       .split(",")
