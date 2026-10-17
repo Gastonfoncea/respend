@@ -14,7 +14,7 @@ import { recommend, fieldsFromAi } from "./agent/recommend.ts";
 import { validateAiOutput, type AiOutput } from "./agent/prompt.ts";
 import type { Analyzer } from "./agent/analyze.ts";
 import { bindingFor, bindingHash } from "./binding.ts";
-import { parseArsToCents, assertCents } from "./money.ts";
+import { parseArsToCents, assertCents, formatArs } from "./money.ts";
 import type { Policy, ReceiptFields, RequestRow, RequestStatus, Session } from "./types.ts";
 
 export class WorkflowError extends Error {}
@@ -378,34 +378,87 @@ export function authorize(ctx: Ctx, session: Session | null, requestId: number, 
       }
     }
     const policy = repo.getPolicy(ctx.db);
-    if (r.amount_cents == null) throw new WorkflowError("Falta el importe.");
-    if (r.amount_cents <= 0) throw new WorkflowError("El importe tiene que ser mayor a cero.");
-    // Límites duros: no se pueden pasar ni con motivo.
-    if (r.amount_cents > policy.capPerReceiptCents) throw new WorkflowError("El importe supera el tope por comprobante.");
-    const budget = getBudget(ctx.db);
-    if (r.amount_cents > budget.availableCents) throw new WorkflowError("No alcanza el presupuesto disponible.");
-    if (!normalizeRecipient(r.recipient)) throw new WorkflowError("La wallet de destino no es válida.");
-
-    const b = bindingFor(r, policy.version);
-    const id = repo.insertAuthorization(ctx.db, {
-      request_id: r.id,
-      amount_cents: b.amount_cents,
-      token_amount: b.token_amount,
-      token_address: b.token_address,
-      chain_id: b.chain_id,
-      recipient: b.recipient,
-      binding_hash: bindingHash(b),
-      policy_version: b.policy_version,
-      authorized_by: actorName(s),
-      review_note: reason || null,
-    });
+    const blocked = hardLimitError(ctx.db, r, policy);
+    if (blocked) throw new WorkflowError(blocked);
+    const { id, hash } = insertAuthorization(ctx.db, r, policy, actorName(s), reason || null);
     repo.setStatus(ctx.db, r.id, "authorized");
     repo.audit(ctx.db, r.id, actorName(s), "authorized", {
       authorization_id: id,
-      binding_hash: bindingHash(b),
+      binding_hash: hash,
       recommendation: r.recommendation,
       reviewed_alerts: input.reviewedAlerts,
       reason: reason || null,
+    });
+    return id;
+  });
+}
+
+/** Límites duros (no se pasan ni con motivo). Devuelve el motivo del bloqueo o null si se puede autorizar. */
+function hardLimitError(db: DB, r: RequestRow, policy: Policy): string | null {
+  if (r.amount_cents == null) return "Falta el importe.";
+  if (r.amount_cents <= 0) return "El importe tiene que ser mayor a cero.";
+  if (r.amount_cents > policy.capPerReceiptCents) return "El importe supera el tope por comprobante.";
+  if (r.amount_cents > getBudget(db).availableCents) return "No alcanza el presupuesto disponible.";
+  if (!normalizeRecipient(r.recipient)) return "La wallet de destino no es válida.";
+  return null;
+}
+
+function insertAuthorization(db: DB, r: RequestRow, policy: Policy, by: string, note: string | null): { id: number; hash: string } {
+  const b = bindingFor(r, policy.version);
+  const hash = bindingHash(b);
+  const id = repo.insertAuthorization(db, {
+    request_id: r.id,
+    amount_cents: b.amount_cents,
+    token_amount: b.token_amount,
+    token_address: b.token_address,
+    chain_id: b.chain_id,
+    recipient: b.recipient,
+    binding_hash: hash,
+    policy_version: b.policy_version,
+    authorized_by: by,
+    review_note: note,
+  });
+  return { id, hash };
+}
+
+// --- pago automático ---
+
+/** El organizador fija hasta cuánto (inclusive) el agente paga solo. 0 lo apaga. */
+export function setAutoPayLimit(ctx: Ctx, session: Session | null, cents: number): void {
+  const s = assertRole(session, ["organizer"]);
+  if (!Number.isSafeInteger(cents) || cents < 0) throw new WorkflowError("El límite tiene que ser un monto válido, 0 o más.");
+  const policy = repo.getPolicy(ctx.db);
+  if (cents > policy.capPerReceiptCents) throw new WorkflowError("El límite automático no puede superar el tope por comprobante.");
+  tx(ctx.db, () => {
+    const before = repo.getAutoPayLimitCents(ctx.db);
+    if (before === cents) return;
+    repo.setAutoPayLimitCents(ctx.db, cents);
+    repo.audit(ctx.db, null, actorName(s), "auto_pay_limit_updated", { before_cents: before, after_cents: cents });
+  });
+}
+
+/**
+ * Autorización automática, sin intervención humana en el momento. La decide el código, nunca la IA:
+ * solo si la recomendación es "approve" (todos los checks pasan, sin alertas ni duplicados), el monto
+ * es menor o igual al límite que fijó el organizador y se cumplen los límites duros.
+ * Devuelve el id de la autorización, o null si la solicitud tiene que ir al organizador.
+ */
+export function autoAuthorize(ctx: Ctx, requestId: number): number | null {
+  return tx(ctx.db, () => {
+    const r = mustGet(ctx.db, requestId);
+    if (r.status !== "analyzed" || r.recommendation !== "approve") return null;
+    if (repo.getActiveAuthorization(ctx.db, requestId)) return null;
+    const limit = repo.getAutoPayLimitCents(ctx.db);
+    if (limit <= 0 || r.amount_cents == null || r.amount_cents > limit) return null;
+    const policy = repo.getPolicy(ctx.db);
+    if (hardLimitError(ctx.db, r, policy)) return null;
+    const { id, hash } = insertAuthorization(ctx.db, r, policy, `${repo.AUTO_PAY_ACTOR} ≤ ${formatArs(limit)}`, null);
+    repo.setStatus(ctx.db, r.id, "authorized");
+    repo.audit(ctx.db, r.id, "agente", "auto_authorized", {
+      authorization_id: id,
+      binding_hash: hash,
+      amount_cents: r.amount_cents,
+      limit_cents: limit,
     });
     return id;
   });

@@ -112,6 +112,14 @@ CREATE TABLE IF NOT EXISTS collaborator_profile (
   name TEXT,
   updated_at TEXT NOT NULL
 );
+
+-- Configuración del agente que define el organizador (se puede cambiar en cualquier momento).
+-- auto_pay_limit_cents: hasta ese monto (inclusive) el agente paga solo los gastos sin alertas. 0 = apagado.
+CREATE TABLE IF NOT EXISTS agent_settings (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  auto_pay_limit_cents INTEGER NOT NULL CHECK (auto_pay_limit_cents >= 0),
+  updated_at TEXT NOT NULL
+);
 `;
 
 export function openDb(file: string): DB {

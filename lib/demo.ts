@@ -10,6 +10,9 @@ export const DEMO_POLICY: Omit<Policy, "version"> = {
   budgetCents: 500000,
 };
 
+/** Límite de pago automático por defecto (si el organizador no configuró otro): 100 wARS, inclusive. */
+export const DEFAULT_AUTO_PAY_LIMIT_CENTS = 10000;
+
 export const DEMO_DESCRIPTIONS: Record<string, string> = {
   "01-valido.png": "Remís para llevar el proyector y los banners al venue del meetup",
   "02-ambiguo.png": "Compras para el meetup",

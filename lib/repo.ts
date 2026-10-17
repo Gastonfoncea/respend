@@ -1,6 +1,7 @@
 // Consultas a SQLite. Sin lógica de negocio: eso vive en workflow.ts, policy.ts, payTool.ts, etc.
 import type { DB } from "./db.ts";
 import { nowIso } from "./db.ts";
+import { DEFAULT_AUTO_PAY_LIMIT_CENTS } from "./demo.ts";
 import type {
   AuditRow,
   AuthorizationRow,
@@ -287,4 +288,31 @@ export function setCollaboratorProfile(db: DB, p: { name: string | null; wallet:
   db.prepare(
     "INSERT INTO collaborator_profile (id, name, wallet, updated_at) VALUES (1, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name = excluded.name, wallet = excluded.wallet, updated_at = excluded.updated_at",
   ).run(p.name, p.wallet, nowIso());
+}
+
+// --- configuración del agente ---
+
+/** Prefijo de authorized_by en las autorizaciones que hace el agente solo. */
+export const AUTO_PAY_ACTOR = "agente · pago automático";
+
+/** Pagos confirmados que autorizó el agente solo. */
+export function autoPaidTotals(db: DB): { count: number; cents: number } {
+  const row = db
+    .prepare(
+      "SELECT COUNT(*) AS n, COALESCE(SUM(a.amount_cents), 0) AS c FROM authorizations a JOIN payments p ON p.authorization_id = a.id WHERE p.status = 'confirmed' AND a.authorized_by LIKE ?",
+    )
+    .get(`${AUTO_PAY_ACTOR}%`) as { n: number; c: number };
+  return { count: row.n, cents: row.c };
+}
+
+/** Límite de pago automático en centavos (0 = apagado). Sin configurar, vale el de la demo. */
+export function getAutoPayLimitCents(db: DB): number {
+  const row = db.prepare("SELECT auto_pay_limit_cents AS v FROM agent_settings WHERE id = 1").get() as { v: number } | undefined;
+  return row ? row.v : DEFAULT_AUTO_PAY_LIMIT_CENTS;
+}
+
+export function setAutoPayLimitCents(db: DB, cents: number): void {
+  db.prepare(
+    "INSERT INTO agent_settings (id, auto_pay_limit_cents, updated_at) VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET auto_pay_limit_cents = excluded.auto_pay_limit_cents, updated_at = excluded.updated_at",
+  ).run(cents, nowIso());
 }
