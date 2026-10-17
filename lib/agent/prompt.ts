@@ -145,7 +145,7 @@ Campos que calcula el sistema y que NO tenés que evaluar: tope por comprobante,
 La imagen adjunta es el <comprobante>.
 
 <descripcion>
-${esc(input.description)}
+${input.description.trim() ? esc(input.description) : "(vacía: el colaborador todavía no explicó para qué fue el gasto. Evaluá solo el ticket; no recomiendes rechazar por falta de descripción.)"}
 </descripcion>
 
 <aclaraciones>
