@@ -43,5 +43,5 @@ test("demo: 01 approve → pago simulado; 02 needs_info → aclaración → appr
   assert.equal(r4.amount_cents, 90000);
   assert.equal(r4.recipient, RECIPIENT);
 
-  assert.equal(getBudget(ctx.db).paidCents, 150000);
+  assert.equal(getBudget(ctx.db).paidCents, 10000);
 });

@@ -70,8 +70,8 @@ const TICKETS: Ticket[] = [
     file: "01-valido.png",
     header: ["REMISES DEL CENTRO SRL", "Av. Corrientes 1234 - CABA", "CUIT 30-71234567-0"],
     meta: ["Fecha: 15/10/2026   Hora: 18:42", "Ticket Nro: 0004-00012345", "Viaje Palermo -> Centro Cultural"],
-    items: [["Viaje 12,4 km", "$ 1.350,00"], ["Espera 10 min", "$ 150,00"]],
-    total: "$ 1.500,00",
+    items: [["Viaje 1,2 km", "$ 80,00"], ["Espera 2 min", "$ 20,00"]],
+    total: "$ 100,00",
     footer: ["Gracias por viajar con nosotros", "Comprobante no valido como factura"],
   },
   {

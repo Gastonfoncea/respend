@@ -118,7 +118,7 @@ export function fakeOutputForDemo(name: string, hasCollaboratorReply: boolean): 
         date: "2026-10-15",
         merchant: "Remises del Centro SRL",
         concept: "Viaje Palermo → Centro Cultural",
-        amount: "1500.00",
+        amount: "100.00",
         currency: "ARS",
         legibility: "good",
       },
@@ -126,8 +126,8 @@ export function fakeOutputForDemo(name: string, hasCollaboratorReply: boolean): 
       category_reasoning: "Es un viaje en remís para llevar materiales al venue: transporte.",
       recommendation: "approve",
       explanation:
-        "El ticket de Remises del Centro SRL del 15/10/2026 por $ 1.500,00 corresponde a transporte, categoría permitida. La fecha está dentro del evento.",
-      evidence: ["Remises del Centro SRL", "15/10/2026", "Viaje Palermo → Centro Cultural", "TOTAL $ 1.500,00"],
+        "El ticket de Remises del Centro SRL del 15/10/2026 por $ 100,00 corresponde a transporte, categoría permitida. La fecha está dentro del evento.",
+      evidence: ["Remises del Centro SRL", "15/10/2026", "Viaje Palermo → Centro Cultural", "TOTAL $ 100,00"],
     });
   }
   if (name.startsWith("02-")) {
