@@ -170,8 +170,8 @@ export default async function WalletPage({ searchParams }: { searchParams: Promi
           </span>
           <span className="small dim">
             {cfg.paymentMode === "mainnet"
-              ? "Cada pago mueve wARS reales, siempre con tu aprobación."
-              : "Ningún pago sale de esta wallet todavía. Con PAYMENT_MODE=mainnet pasan a ser reales, siempre con tu aprobación."}
+              ? "Cada pago mueve wARS reales."
+              : "Ningún pago sale de esta wallet todavía. Con PAYMENT_MODE=mainnet pasan a ser reales."}
           </span>
         </section>
       </div>

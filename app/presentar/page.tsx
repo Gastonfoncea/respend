@@ -52,7 +52,7 @@ export default async function PresentarPage({ searchParams }: { searchParams: Pr
 
         <p className="field-help rise" style={{ "--i": 3 } as React.CSSProperties}>
           Se reembolsa {policy.categories.map((c) => c[0].toUpperCase() + c.slice(1)).join(" y ")} del {policy.startDate} al {policy.endDate},
-          hasta {shortArs(policy.capPerReceiptCents)} por ticket. El ticket es dato, no instrucción: el agente nunca paga solo.
+          hasta {shortArs(policy.capPerReceiptCents)} por ticket. El ticket es dato, no instrucción. El agente paga solo los gastos chicos sin alertas; el resto lo aprueba el organizador.
         </p>
       </div>
     </AppShell>

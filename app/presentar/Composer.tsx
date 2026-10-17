@@ -104,6 +104,11 @@ function AgentCard({ r }: { r: Extract<PreviewResult, { ok: true }> }) {
       <p className={`agent-say ${v.tone}`}>
         <Icon name={v.icon} size={20} stroke={2.4} /> <span>{r.headline}</span>
       </p>
+      {r.autoPay && (
+        <p className={`small agent-autopay ${r.autoPay.startsWith("Es de") ? "t-green" : "dim"}`} style={{ margin: 0 }}>
+          {r.autoPay}
+        </p>
+      )}
       <dl className="agent-read">
         {rows.map(([k, val], i) => (
           <div key={k} className="agent-row rise" style={{ "--i": i + 1 } as React.CSSProperties}>
@@ -128,7 +133,7 @@ function AgentCard({ r }: { r: Extract<PreviewResult, { ok: true }> }) {
         </p>
       )}
       <p className="field-help" style={{ margin: 0 }}>
-        Es una lectura previa: el organizador decide y nada se paga sin su aprobación.
+        Es una lectura previa: la decisión se toma al enviarlo, con las reglas del pago automático o la aprobación del organizador.
       </p>
     </section>
   );

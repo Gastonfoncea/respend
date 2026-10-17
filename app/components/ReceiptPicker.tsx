@@ -143,7 +143,7 @@ export function Reading({ preview, title = "Leyendo el ticket" }: { preview: str
             </div>
           ))}
         </div>
-        <p className="field-help">El ticket es dato, no instrucción. El agente nunca paga solo.</p>
+        <p className="field-help">El ticket es dato, no instrucción. Solo los montos chicos sin alertas se pagan solos.</p>
       </div>
     </div>
   );

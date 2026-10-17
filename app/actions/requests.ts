@@ -7,6 +7,7 @@ import * as server from "@/lib/server.ts";
 import * as wf from "@/lib/workflow.ts";
 import { assertRole } from "@/lib/auth.ts";
 import { payAsOrganizer } from "@/lib/chain/payTool.ts";
+import { maybeAutoPay } from "@/lib/autopay.ts";
 import { reconcile } from "@/lib/chain/reconcile.ts";
 import * as repo from "@/lib/repo.ts";
 import { parseArsToCents } from "@/lib/money.ts";
@@ -31,7 +32,7 @@ export async function submitExpenseAction(fd: FormData) {
       file: { bytes: new Uint8Array(await file.arrayBuffer()), mime: file.type },
     });
     await wf.analyzeRequest(ctx, id);
-    target = reqPath(id);
+    target = withAutoPay(reqPath(id), await maybeAutoPay(ctx, id, server.payTool()));
   } catch (err) {
     target = withQuery("/presentar", "error", errorMessage(err));
   }
@@ -45,8 +46,10 @@ export async function retryAnalysisAction(fd: FormData) {
     assertRole(await getSession(), ["organizer", "collaborator"]);
     const id = idFrom(fd);
     target = reqPath(id);
-    const r = await wf.analyzeRequest(server.ctx(), id);
+    const ctx = server.ctx();
+    const r = await wf.analyzeRequest(ctx, id);
     if (r.ai_error) target = withQuery(target, "error", r.ai_error);
+    else target = withAutoPay(target, await maybeAutoPay(ctx, id, server.payTool()));
   } catch (err) {
     target = withQuery(`/solicitudes/${str(fd, "requestId")}`, "error", errorMessage(err));
   }
@@ -61,9 +64,11 @@ export async function respondAction(fd: FormData) {
     wf.respondClarification(ctx, await getSession(), id, str(fd, "message"));
     const r = await wf.analyzeRequest(ctx, id);
     if (r.ai_error) target = withQuery(target, "error", r.ai_error);
+    else target = withAutoPay(target, await maybeAutoPay(ctx, id, server.payTool()));
   } catch (err) {
     target = withQuery(target, "error", errorMessage(err));
   }
+  revalidatePath("/evento");
   redirect(target);
 }
 
@@ -159,6 +164,13 @@ export async function reconcileAction(fd: FormData) {
   redirect(target);
 }
 
+/** Si el agente pagó solo, lo avisa en la redirección. */
+function withAutoPay(target: string, res: Awaited<ReturnType<typeof maybeAutoPay>>): string {
+  if (!res) return target;
+  const prefix = "Pagado por el agente (pago automático). ";
+  return withQuery(target, res.status === "confirmed" ? "ok" : "error", prefix + payMessage(res.status, res.mode));
+}
+
 function payMessage(status: string, mode: string): string {
   if (status === "confirmed") return mode === "simulated" ? "Pago SIMULADO registrado (no hubo transacción en Celo)." : "Pago confirmado en Celo.";
   if (status === "uncertain") return "El pago quedó en estado incierto: no se reintenta solo. Usá \"Reconciliar\".";
@@ -199,6 +211,26 @@ export async function setMyProfileAction(fd: FormData) {
   }
   revalidatePath("/wallet");
   revalidatePath("/presentar");
+  redirect(target);
+}
+
+export async function setAutoPayLimitAction(fd: FormData) {
+  let target = "/agente";
+  try {
+    const session = await getSession();
+    const ctx = server.ctx();
+    const raw = str(fd, "limit").trim();
+    wf.setAutoPayLimit(ctx, session, raw === "" ? 0 : parseArsToCents(raw));
+    // Tope de 24 h: vacío = automático (3 veces el límite por gasto).
+    if (fd.has("dailyCap")) {
+      const cap = str(fd, "dailyCap").trim();
+      wf.setAutoPayDailyCap(ctx, session, cap === "" ? null : parseArsToCents(cap));
+    }
+    target = withQuery(target, "ok", "Pago automático guardado.");
+  } catch (err) {
+    target = withQuery(target, "error", errorMessage(err));
+  }
+  revalidatePath("/agente");
   redirect(target);
 }
 
