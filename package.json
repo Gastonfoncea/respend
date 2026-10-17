@@ -1,0 +1,34 @@
+{
+  "name": "respend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --test-concurrency=1 tests/",
+    "wallet:new": "node scripts/new-wallet.ts",
+    "wallet:check": "node scripts/check-wallet.ts",
+    "receipts": "node scripts/make-receipts.ts",
+    "agent:register": "node scripts/register-agent.ts",
+    "tx:verify": "node scripts/verify-tx.ts",
+    "demo:reset": "node scripts/reset-demo.ts"
+  },
+  "dependencies": {
+    "@celo/attribution-tags": "0.5.0",
+    "next": "16.3.8",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "viem": "2.57.4"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.7",
+    "sharp": "0.34.5",
+    "typescript": "5.9.3"
+  }
+}
