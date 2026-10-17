@@ -5,9 +5,10 @@ import * as server from "@/lib/server.ts";
 import * as repo from "@/lib/repo.ts";
 import * as wf from "@/lib/workflow.ts";
 import { reconcile } from "@/lib/chain/reconcile.ts";
-import { formatArs, formatWars, centsToWei, centsToDecimalString } from "@/lib/money.ts";
+import { centsToDecimalString, centsToWei, formatArs, formatWars } from "@/lib/money.ts";
 import { CHAIN_ID, WARS_ADDRESS, txUrl } from "@/lib/config.ts";
-import type { Check, DuplicateFlags, Explanation } from "@/lib/types.ts";
+import type { PaymentMode } from "@/lib/config.ts";
+import type { Check, ClarificationRow, DuplicateFlags, Explanation, PaymentRow, RequestRow } from "@/lib/types.ts";
 import {
   authorizeAndPayAction,
   correctAction,
@@ -18,14 +19,33 @@ import {
   respondAction,
   retryAnalysisAction,
 } from "../../actions/requests.ts";
-import Flash from "../../components/Flash.tsx";
+import AppShell from "../../components/AppShell.tsx";
 import CopyAddress from "../../components/CopyAddress.tsx";
+import Flash from "../../components/Flash.tsx";
+import HoldButton from "../../components/HoldButton.tsx";
+import Icon from "../../components/Icon.tsx";
+import Sheet from "../../components/Sheet.tsx";
 import SubmitButton from "../../components/SubmitButton.tsx";
-import { PAYMENT_LABEL, REC_LABEL, RULE_LABEL, STATUS_LABEL, recClass, statusClass } from "../../components/labels.ts";
+import { PAYMENT_LABEL, RULE_LABEL, orgStatus, recView } from "../../components/labels.ts";
+import {
+  Amount,
+  GroupedAddress,
+  Row,
+  Rows,
+  SectionLabel,
+  StateBadge,
+  Stepper,
+  Ticks,
+  TopBar,
+  hhmm,
+  shortArs,
+  shortHash,
+  toneClass,
+} from "../../components/ui.tsx";
 
 export const dynamic = "force-dynamic";
 
-const AUTHOR: Record<string, string> = { agent: "Agente", collaborator: "Colaborador", organizer: "Organizador" };
+const AUTHOR: Record<ClarificationRow["author"], string> = { agent: "Agente", collaborator: "Colaborador", organizer: "Organizador" };
 
 function parse<T>(s: string | null, fallback: T): T {
   if (!s) return fallback;
@@ -36,11 +56,8 @@ function parse<T>(s: string | null, fallback: T): T {
   }
 }
 
-function mark(ok: boolean | null) {
-  if (ok === true) return <span className="ok">✓</span>;
-  if (ok === false) return <span className="bad">✗</span>;
-  return <span className="unk">?</span>;
-}
+const pad = (n: number) => String(n).padStart(3, "0");
+const when = (iso: string) => iso.slice(0, 16).replace("T", " ");
 
 export default async function SolicitudPage({
   params,
@@ -73,7 +90,7 @@ export default async function SolicitudPage({
   const dups = parse<DuplicateFlags>(r.duplicate_flags, { file: [], data: [] });
   const thread = repo.listClarifications(db, id);
   const auths = repo.listAuthorizations(db, id);
-  const activeAuth = repo.getActiveAuthorization(db, id);
+  const payments = repo.listPayments(db, id);
   const audit = repo.listAudit(db, id);
   const policy = repo.getPolicy(db);
   const missingKey = cfg.aiMode === "real" && !cfg.ai.apiKey;
@@ -81,383 +98,854 @@ export default async function SolicitudPage({
     isOrg && ["analyzed", "needs_info", "payment_failed"].includes(r.status) && r.recommendation != null && r.recommendation !== "reject";
   const needsReview = r.recommendation === "flag_review" || r.recommendation === "needs_info";
   const capExceeded = r.amount_cents != null && r.amount_cents > policy.capPerReceiptCents;
+  const canReject = isOrg && ["submitted", "analyzed", "needs_info", "authorized", "payment_failed"].includes(r.status);
+  const canCorrect = isOrg && ["analyzed", "needs_info", "authorized"].includes(r.status);
+  const canAsk = isOrg && ["analyzed", "needs_info"].includes(r.status);
+  const livePayment = latest && ["signed", "sent", "uncertain", "preparing"].includes(latest.status);
+  const rejectReason = (() => {
+    const a = [...audit].reverse().find((x) => x.action === "rejected");
+    return parse<{ reason?: string | null }>(a?.detail ?? null, {}).reason ?? null;
+  })();
+  const alerts = {
+    dupFile: dups.file,
+    dupData: dups.data,
+    suspicious: ai?.suspicious_instructions ?? [],
+    missing: ai?.missing_info ?? [],
+  };
+  const hasAlerts = alerts.dupFile.length + alerts.dupData.length + alerts.suspicious.length + alerts.missing.length > 0;
+
+  // ---------- piezas ----------
+
+  const agentRow = (
+    <Sheet
+      triggerClassName="row row-btn"
+      trigger={
+        <>
+          <span className="row-k">Agente</span>
+          {r.status === "submitted" ? (
+            <span className="row-v dim">Sin análisis</span>
+          ) : (
+            <span className={`row-v ${toneClass(recView(r.recommendation)?.tone ?? "dim")}`}>{agentLine(r, checks)}</span>
+          )}
+          <Icon name="chev" size={16} stroke={2} className={`chev ${toneClass(recView(r.recommendation)?.tone ?? "dim")}`} />
+        </>
+      }
+    >
+      <AgentDetail r={r} checks={checks} explanation={explanation} categoryReasoning={ai?.category_reasoning ?? null} />
+    </Sheet>
+  );
+
+  const fieldRows = (
+    <Rows>
+      <Row k="Comercio">{r.merchant ?? "—"}</Row>
+      <Row k="Fecha">{r.receipt_date ?? "—"}</Row>
+      <Row k="Categoría" tag={r.fields_source === "organizer" ? "corregido" : undefined}>
+        <span style={{ textTransform: "capitalize" }}>{r.category ?? "—"}</span>
+      </Row>
+      <Row k="Para">
+        <CopyAddress address={r.recipient} />
+      </Row>
+      {agentRow}
+    </Rows>
+  );
+
+  const traceRow = (
+    <Sheet
+      triggerClassName="row row-btn"
+      trigger={
+        <>
+          <span className="row-k">Trazabilidad</span>
+          <span className="row-v mono dim">{auths.length + payments.length + 2} pasos</span>
+          <Icon name="chev" size={16} stroke={2} className="chev dim" />
+        </>
+      }
+    >
+      <h2 className="display h2">Trazabilidad</h2>
+      <p className="lead small">Cada paso queda registrado y es verificable.</p>
+      <Trace r={r} auths={auths} payments={payments} />
+      <details>
+        <summary className="small dim" style={{ cursor: "pointer" }}>
+          Registro de auditoría ({audit.length})
+        </summary>
+        <ul className="mono dim" style={{ paddingLeft: 16, lineHeight: 1.8 }}>
+          {audit.map((a) => (
+            <li key={a.id}>
+              {when(a.created_at)} · {a.actor} · {a.action}
+            </li>
+          ))}
+        </ul>
+      </details>
+    </Sheet>
+  );
 
   return (
-    <>
-      <p>
-        <Link href="/evento">← Volver al evento</Link>
-      </p>
-      <div className="page-head">
-        <div>
-          <h1>Solicitud #{r.id}</h1>
-          <p className="muted">{r.description}</p>
-        </div>
-        <div className="badges">
-          <span className={statusClass(r.status)}>{STATUS_LABEL[r.status]}</span>
-          {r.recommendation && <span className={recClass(r.recommendation)}>Recomendación: {REC_LABEL[r.recommendation]}</span>}
-        </div>
-      </div>
+    <AppShell mode={cfg.paymentMode} role={session.role} eventName={policy.name} tabs={false}>
       <Flash error={sp.error} ok={sp.ok} />
-      {r.ai_fake === 1 && <div className="stamp stamp-fake">ANÁLISIS DE PRUEBA (sin IA)</div>}
-
-      <div className="grid-2">
-        <section className="card">
-          <h2>Comprobante</h2>
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img className="receipt" src={`/api/comprobantes/${r.id}`} alt={`Comprobante de la solicitud ${r.id}`} />
-          <p className="small muted">
-            sha256 <code className="wrap-any">{r.file_sha256}</code>
-          </p>
-        </section>
-
-        <div className="stack">
-          {r.status === "submitted" && (
-            <section className="card">
-              <h2>Análisis</h2>
-              {r.ai_error ? (
-                <div className="flash flash-error">{r.ai_error}</div>
-              ) : missingKey ? (
-                <div className="flash flash-error">Falta {cfg.ai.missingKeyVar}: el agente no puede analizar.</div>
-              ) : (
-                <p className="muted">Pendiente de análisis.</p>
-              )}
-              <form action={retryAnalysisAction}>
-                <input type="hidden" name="requestId" value={r.id} />
-                <SubmitButton pendingText="El agente está leyendo el comprobante…" className="btn btn-secondary">
-                  Reintentar análisis
-                </SubmitButton>
-              </form>
-            </section>
-          )}
-
-          <section className="card">
-            <h2>Datos del comprobante</h2>
-            {r.fields_source === "organizer" && <p className="tag">Corregido por el organizador</p>}
-            <dl className="kv">
-              <dt>Fecha</dt>
-              <dd>{r.receipt_date ?? "—"}</dd>
-              <dt>Comercio</dt>
-              <dd>{r.merchant ?? "—"}</dd>
-              <dt>Concepto</dt>
-              <dd>{r.concept ?? "—"}</dd>
-              <dt>Importe</dt>
-              <dd>{r.amount_cents != null ? formatArs(r.amount_cents) : "—"}</dd>
-              <dt>Moneda</dt>
-              <dd>{r.currency ?? "—"}</dd>
-              <dt>Categoría</dt>
-              <dd>{r.category ?? "—"}</dd>
-              <dt>Wallet de destino</dt>
-              <dd>
-                <CopyAddress address={r.recipient} />
-              </dd>
-            </dl>
-            {ai?.category_reasoning && <p className="small muted">Por qué esa categoría: {ai.category_reasoning}</p>}
-            {isOrg && ["analyzed", "needs_info", "authorized"].includes(r.status) && (
-              <details className="edit">
-                <summary>Corregir datos</summary>
-                {r.status === "authorized" && <p className="note">Corregir revoca la autorización vigente: hará falta autorizar de nuevo.</p>}
-                <form action={correctAction} className="form">
-                  <input type="hidden" name="requestId" value={r.id} />
-                  <div className="row">
-                    <label>
-                      Fecha (AAAA-MM-DD)
-                      <input name="date" defaultValue={r.receipt_date ?? ""} />
-                    </label>
-                    <label>
-                      Importe (ARS)
-                      <input name="amount" defaultValue={r.amount_cents != null ? centsToDecimalString(r.amount_cents) : ""} />
-                    </label>
-                  </div>
-                  <label>
-                    Comercio
-                    <input name="merchant" defaultValue={r.merchant ?? ""} />
-                  </label>
-                  <label>
-                    Concepto
-                    <input name="concept" defaultValue={r.concept ?? ""} />
-                  </label>
-                  <div className="row">
-                    <label>
-                      Moneda
-                      <input name="currency" defaultValue={r.currency ?? ""} />
-                    </label>
-                    <label>
-                      Categoría
-                      <select name="category" defaultValue={r.category ?? ""}>
-                        <option value="">—</option>
-                        {[...policy.categories, "otra", "indeterminada"].map((c) => (
-                          <option key={c} value={c}>
-                            {c}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                  </div>
-                  <SubmitButton pendingText="Guardando…" className="btn btn-secondary">
-                    Guardar corrección
-                  </SubmitButton>
-                </form>
-              </details>
-            )}
-          </section>
-
-          {(dups.file.length > 0 || dups.data.length > 0 || (ai && (ai.suspicious_instructions.length > 0 || ai.missing_info.length > 0))) && (
-            <section className="card card-alert">
-              <h2>Alertas</h2>
-              <ul>
-                {dups.file.map((d) => (
-                  <li key={`f${d}`}>
-                    Archivo idéntico al de la <Link href={`/solicitudes/${d}`}>solicitud #{d}</Link>.
-                  </li>
-                ))}
-                {dups.data.map((d) => (
-                  <li key={`d${d}`}>
-                    Mismo comercio, fecha e importe que la <Link href={`/solicitudes/${d}`}>solicitud #{d}</Link>.
-                  </li>
-                ))}
-                {ai?.suspicious_instructions.map((s, i) => (
-                  <li key={`s${i}`}>
-                    Instrucción sospechosa dirigida al agente (se ignoró): <q>{s}</q>
-                  </li>
-                ))}
-                {ai?.missing_info.map((m, i) => (
-                  <li key={`m${i}`}>Falta: {m}</li>
-                ))}
-              </ul>
-              {(dups.file.length > 0 || dups.data.length > 0) && <p className="small muted">Una coincidencia no es prueba de fraude.</p>}
-            </section>
-          )}
-
-          {explanation && (
-            <section className="card">
-              <h2>
-                Recomendación del agente{" "}
-                {r.recommendation && <span className={recClass(r.recommendation)}>{REC_LABEL[r.recommendation]}</span>}
-              </h2>
-              <p>
-                <strong>{explanation.summary}</strong>
-              </p>
-              {explanation.agentText && <p>{explanation.agentText}</p>}
-              <ul className="checks">
-                {checks.map((c) => (
-                  <li key={c.rule}>
-                    {mark(c.ok)} <span className="rule">{RULE_LABEL[c.rule]}</span> <span className="muted small">{c.detail}</span>
-                  </li>
-                ))}
-              </ul>
-              {explanation.evidence.length > 0 && (
-                <p className="small muted">Evidencia leída: {explanation.evidence.map((e) => `«${e}»`).join(" · ")}</p>
-              )}
-              <p className="small muted">Es una recomendación. La decisión es del organizador.</p>
-            </section>
-          )}
+      <TopBar title={`Solicitud ${pad(r.id)}`} mode={cfg.paymentMode} />
+      {r.ai_fake === 1 && <div className="banner-fake">Análisis de prueba · sin IA</div>}
+      <div className="detail">
+        <div className="ticket-hero">
+          <a href={`/api/comprobantes/${r.id}`} target="_blank" rel="noreferrer" aria-label="Ver el comprobante completo">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={`/api/comprobantes/${r.id}`} alt={`Comprobante de la solicitud ${r.id}`} />
+          </a>
         </div>
+        <div className="page stack">{isOrg ? organizerView() : collaboratorView()}</div>
       </div>
+    </AppShell>
+  );
 
-      <section className="card">
-        <h2>Aclaraciones</h2>
-        {thread.length === 0 ? (
-          <p className="muted">Sin aclaraciones.</p>
-        ) : (
-          <ol className="thread">
-            {thread.map((c) => (
-              <li key={c.id} className={`msg msg-${c.author}`}>
-                <span className="who">{AUTHOR[c.author]}</span> <span className="small muted">{c.created_at.slice(0, 16).replace("T", " ")}</span>
-                <p>{c.message}</p>
-              </li>
-            ))}
-          </ol>
-        )}
-        {session.role === "collaborator" && r.status === "needs_info" && (
-          <form action={respondAction} className="form">
-            <input type="hidden" name="requestId" value={r.id} />
-            <label>
-              Tu respuesta
-              <textarea name="message" rows={2} maxLength={1000} required />
-            </label>
-            <SubmitButton pendingText="El agente está releyendo el comprobante…">Responder</SubmitButton>
-          </form>
-        )}
-        {isOrg && ["analyzed", "needs_info"].includes(r.status) && (
-          <form action={requestClarificationAction} className="form inline-form">
-            <input type="hidden" name="requestId" value={r.id} />
-            <input name="message" placeholder="Pedir una aclaración al colaborador…" required maxLength={1000} />
-            <SubmitButton pendingText="Enviando…" className="btn btn-secondary">
-              Pedir aclaración
-            </SubmitButton>
-          </form>
-        )}
-      </section>
+  // ---------- organizador ----------
 
-      {isOrg && (canAuthorize || r.status === "authorized") && r.amount_cents != null && (
-        <section className="card card-auth">
-          <h2>Autorización del pago</h2>
-          <div className="auth-grid">
-            <div>
-              <div className="label">Monto</div>
-              <div className="big">{formatArs(r.amount_cents)}</div>
-              <div className="muted">= {formatWars(centsToWei(r.amount_cents))} (1 ARS = 1 wARS nominal)</div>
-            </div>
-            <div>
-              <div className="label">Token</div>
-              <div>
-                wARS · <code className="wrap-any">{WARS_ADDRESS}</code>
-              </div>
-              <div className="label">Red</div>
-              <div>Celo mainnet (chain {CHAIN_ID})</div>
-            </div>
-            <div>
-              <div className="label">Destinatario</div>
-              <code className="wrap-any big-addr">{r.recipient}</code>
-            </div>
-          </div>
-          {cfg.paymentMode === "simulated" ? (
-            <p className="note">Modo SIMULADO: al autorizar se registra el pago, pero no hay transacción en Celo.</p>
-          ) : (
-            <p className="note note-danger">Modo MAINNET: al autorizar se envían wARS reales desde la wallet del agente.</p>
-          )}
-          {r.status === "authorized" ? (
-            <form action={payAction} className="form">
-              <input type="hidden" name="requestId" value={r.id} />
-              <p>Ya está autorizada (autorización #{activeAuth?.id}). Si el pago no se ejecutó, podés reintentarlo.</p>
-              <SubmitButton pendingText="Pagando…">Pagar ahora</SubmitButton>
-            </form>
-          ) : (
-            <form action={authorizeAndPayAction} className="form">
-              <input type="hidden" name="requestId" value={r.id} />
-              <label className="check">
-                <input type="checkbox" name="verified" required /> Verifiqué monto y destinatario
-              </label>
-              {needsReview && (
-                <>
-                  <label className="check">
-                    <input type="checkbox" name="reviewedAlerts" required /> Revisé las alertas
-                  </label>
-                  <label>
-                    Motivo para autorizar igual (queda registrado)
-                    <input name="reason" required maxLength={1000} />
-                  </label>
-                </>
-              )}
-              {capExceeded && <p className="note note-danger">Supera el tope por comprobante: no se puede autorizar.</p>}
-              <SubmitButton pendingText="Autorizando y pagando…" disabled={capExceeded}>
-                Autorizar y pagar
-              </SubmitButton>
-            </form>
-          )}
+  function organizerView() {
+    const head = paymentHead(r!, latest, cfg.paymentMode) ?? (
+      <>
+        <p className="label">Pide</p>
+        <Amount cents={r!.amount_cents} />
+        {r!.amount_cents != null && <p className="mono dim">= {formatWars(centsToWei(r!.amount_cents))} en Celo</p>}
+        <p className="small dim" style={{ marginTop: 8 }}>
+          “{r!.description}”
+        </p>
+      </>
+    );
+
+    return (
+      <>
+        <section className="stack gap-4 rise" style={{ paddingTop: 8 }}>
+          {head}
         </section>
-      )}
 
-      {isOrg && ["submitted", "analyzed", "needs_info", "authorized", "payment_failed"].includes(r.status) && (
-        <section className="card">
-          <form action={rejectAction} className="form inline-form">
-            <input type="hidden" name="requestId" value={r.id} />
-            <input name="reason" placeholder="Motivo del rechazo (opcional)" maxLength={1000} />
-            <SubmitButton pendingText="Rechazando…" className="btn btn-danger">
+        {capExceeded && r!.amount_cents != null && (
+          <section className="rise" style={{ marginTop: 18, "--i": 1 } as React.CSSProperties}>
+            <Ticks
+              total={r!.amount_cents}
+              count={43}
+              height={18}
+              segments={[
+                { cents: policy.capPerReceiptCents, kind: "paid" },
+                { cents: r!.amount_cents - policy.capPerReceiptCents, kind: "over" },
+              ]}
+            />
+            <div className="ticks-legend mono between">
+              <span className="dim">Tope {shortArs(policy.capPerReceiptCents)}</span>
+              <span className="t-red">+{shortArs(r!.amount_cents - policy.capPerReceiptCents)}</span>
+            </div>
+          </section>
+        )}
+
+        <section className="rise" style={{ marginTop: 18, "--i": 2 } as React.CSSProperties}>
+          {canCorrect && (
+            <SectionLabel
+              action={
+                <Sheet triggerClassName="btn-link inline" trigger={<><Icon name="pen" size={14} stroke={2} /> Corregir</>}>
+                  <CorrectForm r={r!} categories={policy.categories} />
+                </Sheet>
+              }
+            >
+              Datos
+            </SectionLabel>
+          )}
+          {fieldRows}
+        </section>
+
+        {hasAlerts && (
+          <section className="rise" style={{ marginTop: 18, "--i": 3 } as React.CSSProperties}>
+            <Alerts {...alerts} />
+          </section>
+        )}
+
+        {thread.length > 0 && (
+          <section className="rise" style={{ marginTop: 28, "--i": 4 } as React.CSSProperties}>
+            <SectionLabel>Aclaraciones</SectionLabel>
+            <Thread thread={thread} />
+          </section>
+        )}
+
+        {latest && (
+          <section className="rise" style={{ marginTop: 28, "--i": 5 } as React.CSSProperties}>
+            <SectionLabel>Pago</SectionLabel>
+            <PaymentRows p={latest} />
+          </section>
+        )}
+
+        <section style={{ marginTop: 18 }}>
+          <Rows>{traceRow}</Rows>
+        </section>
+
+        <div style={{ flex: 1, minHeight: 24 }} />
+        <div className="actions">{organizerActions()}</div>
+      </>
+    );
+  }
+
+  function organizerActions() {
+    const id = r!.id;
+    const askSheet = canAsk && (
+      <Sheet triggerClassName="btn btn-sq" triggerLabel="Pedir aclaración" trigger={<Icon name="msg" size={20} />}>
+        <h2 className="display h2">Preguntale al colaborador</h2>
+        <p className="lead small">La solicitud pasa a “Falta info” hasta que responda.</p>
+        <form action={requestClarificationAction} className="stack gap-16">
+          <input type="hidden" name="requestId" value={id} />
+          <textarea className="input" name="message" required maxLength={1000} rows={3} placeholder="¿Podés subir el ticket completo?" />
+          <SubmitButton pendingText="Enviando…">Enviar pregunta</SubmitButton>
+        </form>
+      </Sheet>
+    );
+    const rejectSheet = (asPrimary: boolean) =>
+      canReject && (
+        <Sheet
+          triggerClassName={asPrimary ? "btn btn-danger" : "btn btn-sq"}
+          triggerLabel="Rechazar"
+          trigger={asPrimary ? "Rechazar solicitud" : <Icon name="x" size={20} stroke={2} />}
+        >
+          <h2 className="display h2">Rechazar solicitud</h2>
+          <form action={rejectAction} className="stack gap-16">
+            <input type="hidden" name="requestId" value={id} />
+            <label className="field">
+              <span className="field-label">Motivo (lo ve el colaborador)</span>
+              <input className="input" name="reason" maxLength={1000} placeholder="Opcional" />
+            </label>
+            <SubmitButton className="btn btn-danger" pendingText="Rechazando…">
               Rechazar
             </SubmitButton>
           </form>
-        </section>
-      )}
+        </Sheet>
+      );
 
-      {latest && (
-        <section className="card">
-          <h2>Pago</h2>
-          {latest.mode === "simulated" && <div className="stamp stamp-sim">SIMULADO — no hubo transacción en Celo</div>}
-          <dl className="kv">
-            <dt>Estado</dt>
-            <dd>{PAYMENT_LABEL[latest.status]}</dd>
-            {latest.tx_hash && (
-              <>
-                <dt>{latest.mode === "simulated" ? "Identificador simulado" : "Transacción"}</dt>
-                <dd>
-                  {latest.mode === "mainnet" ? (
-                    <a href={txUrl(latest.tx_hash)} target="_blank" rel="noreferrer">
-                      <code className="wrap-any">{latest.tx_hash}</code>
-                    </a>
-                  ) : (
-                    <code className="wrap-any">{latest.tx_hash}</code>
-                  )}
-                </dd>
-              </>
-            )}
-            {latest.block_number != null && (
-              <>
-                <dt>Bloque</dt>
-                <dd>{latest.block_number}</dd>
-              </>
-            )}
-            {latest.mode === "mainnet" && latest.attribution_ok != null && (
-              <>
-                <dt>Tag ERC-8021</dt>
-                <dd>{latest.attribution_ok ? "✓ presente" : "✗ no encontrado"}</dd>
-              </>
-            )}
-            {latest.error && (
-              <>
-                <dt>Detalle</dt>
-                <dd>{latest.error}</dd>
-              </>
-            )}
-          </dl>
-          {isOrg && ["signed", "sent", "uncertain", "preparing"].includes(latest.status) && (
-            <form action={reconcileAction}>
-              <input type="hidden" name="requestId" value={r.id} />
-              <SubmitButton pendingText="Consultando Celo…" className="btn btn-secondary">
-                Reconciliar
+    if (r!.status === "submitted") {
+      return (
+        <>
+          <div className="notice notice-neutral">
+            <Icon name="warn" size={18} stroke={2} />
+            <span>
+              {r!.ai_error ?? (missingKey ? `El agente no puede analizar: falta ${cfg.ai.missingKeyVar} en el servidor.` : "Pendiente de análisis.")}
+            </span>
+          </div>
+          <div className="btn-row">
+            {rejectSheet(false)}
+            <form action={retryAnalysisAction} style={{ flex: 1, display: "flex" }}>
+              <input type="hidden" name="requestId" value={id} />
+              <SubmitButton className="btn btn-neutral" pendingText="Leyendo el ticket…">
+                <Icon name="refresh" size={18} stroke={2} /> Reintentar análisis
               </SubmitButton>
             </form>
-          )}
-        </section>
-      )}
+          </div>
+        </>
+      );
+    }
 
-      <section className="card">
-        <h2>Trazabilidad</h2>
-        <ol className="trace">
-          <li>
-            <strong>Comprobante</strong> · sha256 <code className="wrap-any">{r.file_sha256.slice(0, 16)}…</code> · presentado{" "}
-            {r.created_at.slice(0, 16).replace("T", " ")}
-          </li>
-          <li>
-            <strong>Análisis</strong> ·{" "}
-            {r.ai_ran_at
-              ? `${r.ai_fake ? "analizador de prueba" : `${r.ai_provider} · ${r.ai_model}`} · ${r.ai_ran_at.slice(0, 16).replace("T", " ")} · política v${r.policy_version}`
-              : "pendiente"}
-          </li>
-          {auths.map((a) => (
-            <li key={a.id}>
-              <strong>Autorización #{a.id}</strong> · {a.authorized_by} · {a.created_at.slice(0, 16).replace("T", " ")} · binding{" "}
-              <code>{a.binding_hash.slice(0, 16)}…</code>
-              {a.review_note && <> · motivo: “{a.review_note}”</>}
-              {a.revoked_at && <span className="bad"> · revocada: {a.revoke_reason}</span>}
-            </li>
+    if (livePayment && latest) {
+      return (
+        <>
+          {latest.status === "uncertain" && (
+            <div className="notice notice-amb">
+              <Icon name="warn" size={18} stroke={2} />
+              <span>No reintentes: podría pagarse dos veces.</span>
+            </div>
+          )}
+          <form action={reconcileAction}>
+            <input type="hidden" name="requestId" value={id} />
+            <SubmitButton className="btn btn-neutral" pendingText="Consultando Celo…">
+              <Icon name="refresh" size={18} stroke={2} /> Reconciliar
+            </SubmitButton>
+          </form>
+        </>
+      );
+    }
+
+    if (r!.status === "authorized") {
+      return (
+        <form action={payAction} className="stack gap-12">
+          <input type="hidden" name="requestId" value={id} />
+          <p className="small dim">Ya está autorizada. Si el pago no salió, podés intentarlo de nuevo.</p>
+          <div className="btn-row">
+            {rejectSheet(false)}
+            <HoldButton label={cfg.paymentMode === "mainnet" ? "Mantené para pagar en mainnet" : "Mantené para pagar"} />
+          </div>
+        </form>
+      );
+    }
+
+    if (canAuthorize && !capExceeded) {
+      return (
+        <div className="btn-row">
+          {askSheet}
+          {rejectSheet(false)}
+          <Sheet triggerClassName="btn btn-primary" trigger={r!.status === "payment_failed" ? "Volver a autorizar" : "Revisar y pagar"}>
+            <PayForm r={r!} needsReview={needsReview} mode={cfg.paymentMode} />
+          </Sheet>
+        </div>
+      );
+    }
+
+    if (canReject) {
+      return (
+        <>
+          {(capExceeded || r!.recommendation === "reject") && (
+            <p className="small dim">
+              {capExceeded ? "Supera el tope por ticket. Es un límite fijo: no se puede pagar." : "El agente recomienda rechazar: no se puede autorizar."}
+            </p>
+          )}
+          <div className="btn-row">
+            {askSheet}
+            {rejectSheet(true)}
+          </div>
+        </>
+      );
+    }
+
+    return (
+      <Link href="/evento" className="btn btn-neutral">
+        Volver a solicitudes
+      </Link>
+    );
+  }
+
+  // ---------- colaborador ----------
+
+  function collaboratorView() {
+    const req = r!;
+    if (req.status === "needs_info") {
+      const asked = [...thread].reverse().find((c) => c.author !== "collaborator");
+      return (
+        <>
+          <section className="stack gap-4 rise" style={{ paddingTop: 8 }}>
+            <div className="between">
+              <span className="label">{req.merchant ?? req.description}</span>
+              <span className="display" style={{ fontSize: 20 }}>
+                {shortArs(req.amount_cents)}
+              </span>
+            </div>
+            <div className="sp-16" />
+            <p className="section-label" style={{ color: "var(--amb)" }}>
+              {asked ? `El ${AUTHOR[asked.author].toLowerCase()} pregunta` : "Falta información"}
+            </p>
+            <p className="question">{asked?.message ?? ai?.clarification_questions[0] ?? "¿Podés agregar más detalle sobre este gasto?"}</p>
+          </section>
+          {thread.length > 1 && (
+            <section style={{ marginTop: 24 }}>
+              <Thread thread={thread.slice(0, -1)} />
+            </section>
+          )}
+          <div style={{ flex: 1, minHeight: 24 }} />
+          <div className="actions">
+            <form action={respondAction} className="composer">
+              <input type="hidden" name="requestId" value={req.id} />
+              <input name="message" required maxLength={1000} placeholder="Tu respuesta" aria-label="Tu respuesta" autoComplete="off" />
+              <SubmitButton className="send" pendingText="" ariaLabel="Enviar respuesta">
+                <Icon name="up" size={20} stroke={2.25} />
+              </SubmitButton>
+            </form>
+          </div>
+        </>
+      );
+    }
+
+    if (req.status === "reimbursed") {
+      return (
+        <>
+          <section className="stack gap-4" style={{ paddingTop: 16 }}>
+            <StateBadge kind="ok" />
+            <div className="sp-16" />
+            <p className="label">Cobraste</p>
+            <Amount cents={req.amount_cents} />
+            {req.amount_cents != null && (
+              <p className="mono dim">
+                {formatWars(centsToWei(req.amount_cents))} · {req.merchant ?? req.description}
+              </p>
+            )}
+          </section>
+          <section className="rise" style={{ marginTop: 22, "--i": 2 } as React.CSSProperties}>
+            <Rows>
+              <Row k="Llegó a">
+                <CopyAddress address={req.recipient} />
+              </Row>
+              {latest && <TxRow p={latest} />}
+              <Row k="Red">Celo</Row>
+              <Row k="Modo" tone={latest?.mode === "mainnet" ? undefined : "amb"}>
+                {latest?.mode === "mainnet" ? "Mainnet real" : "Simulado"}
+              </Row>
+            </Rows>
+          </section>
+          <div style={{ flex: 1, minHeight: 24 }} />
+          <div className="actions">
+            <Link href="/evento" className="btn btn-neutral">
+              Listo
+            </Link>
+          </div>
+        </>
+      );
+    }
+
+    if (req.status === "rejected") {
+      return (
+        <>
+          <section className="stack gap-4" style={{ paddingTop: 16 }}>
+            <StateBadge kind="bad" />
+            <div className="sp-16" />
+            <p className="label t-red">Rechazado</p>
+            <Amount cents={req.amount_cents} />
+            <p className="small dim">{req.merchant ?? req.description}</p>
+          </section>
+          <section className="rise" style={{ marginTop: 22, "--i": 2 } as React.CSSProperties}>
+            <Rows>
+              <Row k="Motivo">{rejectReason ?? "Sin motivo"}</Row>
+              <Row k="Decidió">Organizador</Row>
+            </Rows>
+          </section>
+          <div style={{ flex: 1, minHeight: 24 }} />
+          <div className="actions">
+            <Link href="/presentar" className="btn btn-neutral">
+              <Icon name="cam" size={18} stroke={2} /> Cargar otro gasto
+            </Link>
+          </div>
+        </>
+      );
+    }
+
+    const step = ["authorized", "paying"].includes(req.status) ? 2 : 1;
+    const rec = recView(req.recommendation);
+    return (
+      <>
+        <section className="stack gap-4 rise" style={{ paddingTop: 8 }}>
+          <p className="label">{req.status === "submitted" ? "Guardado" : "Enviado al organizador"}</p>
+          <Amount cents={req.amount_cents} />
+          <p className="small dim">
+            {req.merchant ?? req.description}
+            {req.category ? ` · ${req.category}` : ""}
+          </p>
+        </section>
+        <section className="rise" style={{ marginTop: 28, "--i": 1 } as React.CSSProperties}>
+          <Stepper active={step} labels={["Enviado", "Revisión", "Cobro"]} />
+        </section>
+        <section className="rise" style={{ marginTop: 22, "--i": 2 } as React.CSSProperties}>
+          <Rows>
+            <Row k="Agente" tone={rec?.tone ?? "dim"}>
+              {req.status === "submitted" ? "Sin análisis" : rec ? `Recomienda ${rec.label.toLowerCase()}` : "—"}
+            </Row>
+            <Row k="Organizador" tone={step === 2 ? "green" : undefined}>
+              {step === 2 ? "Aprobó" : "Revisando"}
+            </Row>
+            <Row k="Cobro" tone="dim">
+              {step === 2 ? "En curso" : "Cuando apruebe"}
+            </Row>
+          </Rows>
+        </section>
+        {req.status === "submitted" && (
+          <div className="notice notice-neutral" style={{ marginTop: 18 }}>
+            <Icon name="warn" size={18} stroke={2} />
+            <span>{req.ai_error ?? (missingKey ? "El agente no pudo analizar el ticket todavía." : "Pendiente de análisis.")}</span>
+          </div>
+        )}
+        <div style={{ flex: 1, minHeight: 24 }} />
+        <div className="actions">
+          {req.status === "submitted" && wf.canRetryAnalysis(req) ? (
+            <form action={retryAnalysisAction}>
+              <input type="hidden" name="requestId" value={req.id} />
+              <SubmitButton className="btn btn-neutral" pendingText="Leyendo el ticket…">
+                <Icon name="refresh" size={18} stroke={2} /> Reintentar análisis
+              </SubmitButton>
+            </form>
+          ) : (
+            <>
+              <p className="small dim-2">Te avisamos cuando se mueva.</p>
+              <Link href="/evento" className="btn btn-neutral">
+                Listo
+              </Link>
+            </>
+          )}
+        </div>
+      </>
+    );
+  }
+}
+
+// ---------- componentes de la página ----------
+
+function agentLine(r: RequestRow, checks: Check[]): string {
+  const known = checks.filter((c) => c.ok !== null);
+  const ok = known.filter((c) => c.ok).length;
+  if (r.recommendation === "approve") return `Cumple ${ok} de ${checks.length}`;
+  return orgStatus({ status: "analyzed", recommendation: r.recommendation }).label;
+}
+
+function paymentHead(r: RequestRow, p: PaymentRow | null, mode: PaymentMode): React.ReactNode | null {
+  const sub = r.amount_cents != null ? formatWars(centsToWei(r.amount_cents)) : "";
+  if (r.status === "reimbursed")
+    return (
+      <>
+        <StateBadge kind="ok" />
+        <div className="sp-16" />
+        <p className="label">Pagado</p>
+        <Amount cents={r.amount_cents} />
+        <p className="mono dim">
+          {sub}
+          {p?.block_number != null ? ` · bloque ${p.block_number}` : ""}
+        </p>
+      </>
+    );
+  if (r.status === "payment_failed")
+    return (
+      <>
+        <StateBadge kind="bad" />
+        <div className="sp-16" />
+        <p className="label t-red">No se pagó</p>
+        <Amount cents={r.amount_cents} />
+        <p className="mono dim">La plata no salió de la wallet</p>
+      </>
+    );
+  if (r.status === "payment_uncertain")
+    return (
+      <>
+        <StateBadge kind="warn" />
+        <div className="sp-16" />
+        <p className="label t-amb">No sabemos si salió</p>
+        <Amount cents={r.amount_cents} />
+        <p className="mono dim">La red no confirmó todavía</p>
+      </>
+    );
+  if (r.status === "paying")
+    return (
+      <>
+        <p className="label">{mode === "mainnet" ? "Enviando a Celo" : "Registrando pago simulado"}</p>
+        <Amount cents={r.amount_cents} />
+        <p className="mono dim">a {shortHash(r.recipient)}</p>
+        <div className="sp-24" />
+        <Ticks total={40} count={40} height={28} segments={[{ cents: p?.status === "sent" ? 26 : 12, kind: "live" }]} />
+      </>
+    );
+  if (r.status === "rejected")
+    return (
+      <>
+        <StateBadge kind="bad" />
+        <div className="sp-16" />
+        <p className="label t-red">Rechazado</p>
+        <Amount cents={r.amount_cents} />
+        <p className="small dim">“{r.description}”</p>
+      </>
+    );
+  return null;
+}
+
+function AgentDetail({
+  r,
+  checks,
+  explanation,
+  categoryReasoning,
+}: {
+  r: RequestRow;
+  checks: Check[];
+  explanation: Explanation | null;
+  categoryReasoning: string | null;
+}) {
+  const rec = recView(r.recommendation);
+  return (
+    <>
+      <p className="section-label">El agente</p>
+      <h2 className={`display h1 ${rec ? toneClass(rec.tone) : ""}`}>{rec ? `Recomienda ${rec.label.toLowerCase()}` : "Sin análisis"}</h2>
+      {explanation && <p style={{ margin: 0, fontWeight: 500 }}>{explanation.summary}</p>}
+      {checks.length > 0 && (
+        <div className="rows">
+          {checks.map((c) => (
+            <div key={c.rule} className="row" style={{ alignItems: "flex-start" }}>
+              <span className={c.ok === true ? "t-green" : c.ok === false ? "t-red" : "dim"} style={{ paddingTop: 2 }}>
+                <Icon name={c.ok === true ? "check" : c.ok === false ? "x" : "q"} size={16} stroke={2.5} />
+              </span>
+              <span className="stack gap-4" style={{ flex: 1, minWidth: 0 }}>
+                <span style={{ fontWeight: 500 }}>{RULE_LABEL[c.rule]}</span>
+                <span className="small dim">{c.detail}</span>
+              </span>
+            </div>
           ))}
-          {repo.listPayments(db, id).map((p) => (
-            <li key={p.id}>
-              <strong>Pago #{p.id}</strong> · {p.mode === "simulated" ? "SIMULADO" : "mainnet"} · {PAYMENT_LABEL[p.status]}
-              {p.tx_hash && p.mode === "mainnet" && (
-                <>
-                  {" "}
-                  ·{" "}
-                  <a href={txUrl(p.tx_hash)} target="_blank" rel="noreferrer">
-                    {p.tx_hash.slice(0, 12)}…
-                  </a>
-                </>
-              )}
-            </li>
-          ))}
-        </ol>
-        <details>
-          <summary className="small">Registro de auditoría ({audit.length})</summary>
-          <ul className="audit small">
-            {audit.map((a) => (
-              <li key={a.id}>
-                {a.created_at.slice(0, 19).replace("T", " ")} · {a.actor} · {a.action}
-              </li>
-            ))}
-          </ul>
-        </details>
-      </section>
+        </div>
+      )}
+      {explanation?.agentText && <p className="small dim" style={{ margin: 0 }}>“{explanation.agentText}”</p>}
+      {categoryReasoning && <p className="small dim" style={{ margin: 0 }}>Categoría: {categoryReasoning}</p>}
+      {explanation && explanation.evidence.length > 0 && (
+        <p className="mono dim-2" style={{ margin: 0 }}>
+          Leyó: {explanation.evidence.map((e) => `«${e}»`).join(" · ")}
+        </p>
+      )}
+      <p className="mono dim-2" style={{ margin: 0 }}>
+        {r.ai_fake ? "analizador de prueba" : (r.ai_model ?? "—")}
+        {r.ai_ran_at ? ` · ${hhmm(r.ai_ran_at)}` : ""} · política v{r.policy_version ?? "—"}
+      </p>
+      <p className="field-help">Es una recomendación. La decisión es del organizador.</p>
+    </>
+  );
+}
+
+function Alerts({ dupFile, dupData, suspicious, missing }: { dupFile: number[]; dupData: number[]; suspicious: string[]; missing: string[] }) {
+  return (
+    <div className="alerts">
+      {dupFile.map((d) => (
+        <div key={`f${d}`} className="alert">
+          <div className="alert-body">
+            <span className="alert-title">Archivo repetido</span>
+            <span className="alert-sub">
+              Es idéntico al de la <Link href={`/solicitudes/${d}`}>solicitud {pad(d)}</Link>
+            </span>
+          </div>
+        </div>
+      ))}
+      {dupData.map((d) => (
+        <div key={`d${d}`} className="alert">
+          <div className="alert-body">
+            <span className="alert-title">Posible duplicado</span>
+            <span className="alert-sub">
+              Mismo comercio, fecha e importe que la <Link href={`/solicitudes/${d}`}>solicitud {pad(d)}</Link>. No es prueba de fraude.
+            </span>
+          </div>
+        </div>
+      ))}
+      {suspicious.map((s, i) => (
+        <div key={`s${i}`} className="alert" style={{ "--tone": "var(--red)" } as React.CSSProperties}>
+          <div className="alert-body">
+            <span className="alert-title">Instrucción en el ticket</span>
+            <span className="alert-sub">Ignorada. El ticket es dato, no orden.</span>
+            <span className="quote-struck">“{s}”</span>
+          </div>
+        </div>
+      ))}
+      {missing.map((m, i) => (
+        <div key={`m${i}`} className="alert" style={{ "--tone": "var(--dim)" } as React.CSSProperties}>
+          <div className="alert-body">
+            <span className="alert-title">Falta información</span>
+            <span className="alert-sub">{m}</span>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Thread({ thread }: { thread: ClarificationRow[] }) {
+  return (
+    <div className="thread">
+      {thread.map((c) => (
+        <div key={c.id} className={`msg msg-${c.author}`}>
+          <span className="msg-who">
+            {AUTHOR[c.author]} · {hhmm(c.created_at)}
+          </span>
+          <p className="msg-text">{c.message}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function TxRow({ p }: { p: PaymentRow }) {
+  if (!p.tx_hash) return null;
+  return (
+    <Row k={p.mode === "simulated" ? "Id simulado" : "Transacción"} mono>
+      {p.mode === "mainnet" ? (
+        <a href={txUrl(p.tx_hash)} target="_blank" rel="noreferrer" className="inline">
+          {shortHash(p.tx_hash)} <Icon name="ext" size={14} stroke={2} />
+        </a>
+      ) : (
+        shortHash(p.tx_hash)
+      )}
+    </Row>
+  );
+}
+
+function PaymentRows({ p }: { p: PaymentRow }) {
+  const tone = p.status === "confirmed" ? "green" : p.status === "failed" ? "red" : p.status === "uncertain" ? "amb" : undefined;
+  return (
+    <Rows>
+      <Row k="Estado" tone={tone}>
+        {PAYMENT_LABEL[p.status]}
+      </Row>
+      <TxRow p={p} />
+      {p.block_number != null && (
+        <Row k="Bloque" mono>
+          {p.block_number}
+        </Row>
+      )}
+      {p.mode === "mainnet" && p.attribution_ok != null && (
+        <Row k="Atribución" tone={p.attribution_ok ? "green" : "red"}>
+          {p.attribution_ok ? "verificada" : "no encontrada"}
+        </Row>
+      )}
+      {p.nonce != null && (
+        <Row k="Nonce" mono>
+          {p.nonce}
+        </Row>
+      )}
+      {p.error && <Row k="Detalle">{p.error}</Row>}
+      <Row k="Modo" tone={p.mode === "mainnet" ? undefined : "amb"}>
+        {p.mode === "mainnet" ? "Mainnet real" : "Simulado · sin transacción"}
+      </Row>
+    </Rows>
+  );
+}
+
+function Trace({ r, auths, payments }: { r: RequestRow; auths: ReturnType<typeof repo.listAuthorizations>; payments: PaymentRow[] }) {
+  return (
+    <ol className="timeline">
+      <li>
+        <span className="rail">
+          <i className="node" />
+          <i className="line" />
+        </span>
+        <span className="tl-body">
+          <span className="tl-head">
+            Comprobante <span className="mono dim-2">{hhmm(r.created_at)}</span>
+          </span>
+          <span className="tl-sub mono">sha256 {r.file_sha256.slice(0, 16)}…</span>
+        </span>
+      </li>
+      <li>
+        <span className="rail">
+          <i className={`node ${r.ai_ran_at ? "" : "is-off"}`} />
+          <i className="line" />
+        </span>
+        <span className="tl-body">
+          <span className="tl-head">
+            Análisis <span className="mono dim-2">{hhmm(r.ai_ran_at)}</span>
+          </span>
+          <span className="tl-sub mono">
+            {r.ai_ran_at ? `${r.ai_fake ? "analizador de prueba" : `${r.ai_provider} · ${r.ai_model}`} · política v${r.policy_version}` : "pendiente"}
+          </span>
+        </span>
+      </li>
+      {auths.map((a) => (
+        <li key={`a${a.id}`}>
+          <span className="rail">
+            <i className={`node ${a.revoked_at ? "is-off" : ""}`} />
+            <i className="line" />
+          </span>
+          <span className="tl-body">
+            <span className="tl-head">
+              Autorización <span className="mono dim-2">{hhmm(a.created_at)}</span>
+            </span>
+            <span className="tl-sub mono">
+              {a.authorized_by} · binding {a.binding_hash.slice(0, 12)}…{a.review_note ? ` · motivo: “${a.review_note}”` : ""}
+              {a.revoked_at ? ` · revocada: ${a.revoke_reason}` : ""}
+            </span>
+          </span>
+        </li>
+      ))}
+      {payments.map((p) => (
+        <li key={`p${p.id}`}>
+          <span className="rail">
+            <i className={`node ${p.status === "failed" ? "is-bad" : p.status === "confirmed" ? "" : "is-off"}`} />
+            <i className="line" />
+          </span>
+          <span className="tl-body">
+            <span className="tl-head">
+              {p.mode === "simulated" ? "Pago simulado" : "Transacción"} <span className="mono dim-2">{hhmm(p.updated_at)}</span>
+            </span>
+            <span className="tl-sub mono">
+              {PAYMENT_LABEL[p.status]}
+              {p.tx_hash ? ` · ${shortHash(p.tx_hash)}` : ""}
+              {p.block_number != null ? ` · bloque ${p.block_number}` : ""}
+              {p.mode === "mainnet" && p.attribution_ok != null ? ` · atribución ${p.attribution_ok ? "verificada" : "no encontrada"}` : ""}
+            </span>
+          </span>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function CorrectForm({ r, categories }: { r: RequestRow; categories: string[] }) {
+  return (
+    <>
+      <h2 className="display h2 inline">
+        <Icon name="pen" size={18} /> Corregir datos
+      </h2>
+      {r.status === "authorized" && (
+        <div className="notice notice-amb">
+          <Icon name="warn" size={18} stroke={2} />
+          <span>Corregir revoca la autorización vigente: hará falta autorizar de nuevo.</span>
+        </div>
+      )}
+      <form action={correctAction} className="stack gap-12">
+        <input type="hidden" name="requestId" value={r.id} />
+        <div className="grid-2">
+          <label className="field">
+            <span className="field-label">Fecha</span>
+            <input className="input" name="date" placeholder="AAAA-MM-DD" defaultValue={r.receipt_date ?? ""} />
+          </label>
+          <label className="field">
+            <span className="field-label">Importe (ARS)</span>
+            <input className="input" name="amount" inputMode="decimal" defaultValue={r.amount_cents != null ? centsToDecimalString(r.amount_cents) : ""} />
+          </label>
+        </div>
+        <label className="field">
+          <span className="field-label">Comercio</span>
+          <input className="input" name="merchant" defaultValue={r.merchant ?? ""} />
+        </label>
+        <label className="field">
+          <span className="field-label">Concepto</span>
+          <input className="input" name="concept" defaultValue={r.concept ?? ""} />
+        </label>
+        <div className="grid-2">
+          <label className="field">
+            <span className="field-label">Moneda</span>
+            <input className="input" name="currency" defaultValue={r.currency ?? ""} />
+          </label>
+          <label className="field">
+            <span className="field-label">Categoría</span>
+            <select className="input" name="category" defaultValue={r.category ?? ""}>
+              <option value="">—</option>
+              {[...categories, "otra", "indeterminada"].map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <p className="field-help">Queda marcado como corregido por el organizador. Se vuelven a chequear las reglas; la IA no.</p>
+        <SubmitButton pendingText="Guardando…">Guardar</SubmitButton>
+      </form>
+    </>
+  );
+}
+
+function PayForm({ r, needsReview, mode }: { r: RequestRow; needsReview: boolean; mode: PaymentMode }) {
+  return (
+    <>
+      <h2 className="display h2">Antes de pagar</h2>
+      <Amount cents={r.amount_cents} size="sm" suffix=" ARS" />
+      <p className="mono dim" style={{ margin: 0 }}>
+        = {r.amount_cents != null ? formatWars(centsToWei(r.amount_cents)) : "—"} · Celo {CHAIN_ID}
+      </p>
+      <div className="panel stack gap-8">
+        <span className="small dim">Destino completo</span>
+        <GroupedAddress address={r.recipient} />
+      </div>
+      <p className="mono dim-2" style={{ margin: 0, overflowWrap: "anywhere" }}>
+        Token wARS {WARS_ADDRESS}
+      </p>
+      <form action={authorizeAndPayAction} className="stack gap-12">
+        <input type="hidden" name="requestId" value={r.id} />
+        {needsReview && (
+          <>
+            <label className="check">
+              <input type="checkbox" name="reviewedAlerts" required /> Revisé las alertas
+            </label>
+            <input className="input" name="reason" required maxLength={1000} placeholder="Motivo para pagar igual (queda registrado)" />
+          </>
+        )}
+        <label className="check">
+          <input type="checkbox" name="verified" required /> Verifiqué monto y destinatario
+        </label>
+        {mode === "mainnet" ? (
+          <div className="notice notice-red">
+            <Icon name="warn" size={18} stroke={2} />
+            <span>Mainnet: se envían wARS reales desde la wallet del agente.</span>
+          </div>
+        ) : (
+          <p className="field-help">Simulado: se registra el pago, pero no hay transacción en Celo.</p>
+        )}
+        <HoldButton label={mode === "mainnet" ? "Mantené para pagar en mainnet" : "Mantené para pagar"} />
+        <p className="field-help" style={{ textAlign: "center" }}>
+          {formatArs(r.amount_cents ?? 0)} · mantené apretado 1 segundo
+        </p>
+      </form>
     </>
   );
 }
