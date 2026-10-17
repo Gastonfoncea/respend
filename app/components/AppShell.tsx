@@ -33,7 +33,7 @@ export default function AppShell({
           </Link>
           <ModeTag mode={mode} />
         </div>
-        <NavLinks variant="side" />
+        <NavLinks variant="side" role={role} />
         <div className="side-foot">
           <AccountSheet role={role} mode={mode} eventName={eventName} variant="side" />
         </div>
@@ -41,7 +41,7 @@ export default function AppShell({
       <div className={`main ${tabs ? "" : "no-tabs"}`}>{children}</div>
       {tabs && (
         <nav className="tabbar" aria-label="Secciones">
-          <NavLinks variant="tab" />
+          <NavLinks variant="tab" role={role} />
         </nav>
       )}
     </div>

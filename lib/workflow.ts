@@ -79,6 +79,26 @@ export function updatePolicy(ctx: Ctx, session: Session | null, p: Omit<Policy, 
   });
 }
 
+// --- wallet de cobro del colaborador ---
+
+/**
+ * El colaborador define a qué wallet le pagan. Las solicitudes ya presentadas conservan la wallet que tenían
+ * (el organizador autorizó ese destinatario exacto); la nueva aplica a los gastos que presente después.
+ */
+export function setCollaboratorWallet(ctx: Ctx, session: Session | null, address: string): string {
+  const s = assertRole(session, ["collaborator"]);
+  const wallet = normalizeRecipient(address);
+  if (!wallet) throw new WorkflowError("Esa no es una dirección válida (0x… de 40 caracteres hex).");
+  return tx(ctx.db, () => {
+    const before = repo.getCollaboratorWallet(ctx.db);
+    if (before !== wallet) {
+      repo.setCollaboratorWallet(ctx.db, wallet);
+      repo.audit(ctx.db, null, actorName(s), "collaborator_wallet_updated", { before, after: wallet });
+    }
+    return wallet;
+  });
+}
+
 // --- presentar ---
 
 export interface SubmitInput {
@@ -95,6 +115,11 @@ export function submitExpense(ctx: Ctx, session: Session | null, input: SubmitIn
   if (description.length > 1000) throw new WorkflowError("La descripción es demasiado larga (máx. 1000 caracteres).");
   const recipient = normalizeRecipient(input.recipient);
   if (!recipient) throw new WorkflowError("La wallet de destino no es una dirección válida (0x… de 40 caracteres hex).");
+  // Si el colaborador configuró su wallet de cobro, el destinatario tiene que ser esa: no se acepta otra.
+  const profileWallet = repo.getCollaboratorWallet(ctx.db);
+  if (profileWallet && profileWallet !== recipient) {
+    throw new WorkflowError("La wallet de cobro tiene que ser la de tu perfil. Cambiala desde \"Mi wallet\".");
+  }
   const { bytes } = input.file;
   if (!bytes.length) throw new WorkflowError("Falta la imagen del comprobante.");
   if (bytes.length > MAX_RECEIPT_BYTES) throw new WorkflowError("La imagen supera los 4 MB.");

@@ -103,6 +103,13 @@ CREATE TABLE IF NOT EXISTS audit_log (
   detail TEXT,
   created_at TEXT NOT NULL
 );
+
+-- Wallet de cobro del colaborador (piloto: un solo colaborador). La define el propio colaborador.
+CREATE TABLE IF NOT EXISTS collaborator_profile (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  wallet TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 `;
 
 export function openDb(file: string): DB {
