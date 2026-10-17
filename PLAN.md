@@ -39,7 +39,13 @@ No afirmes en ningún lado que Ripio, Twin u otra empresa usa este proceso.
 8. **Gasto de OpenAI acotado:**
    - Los tests automatizados no llaman al modelo; usan un analizador falso.
    - Las pruebas reales con el modelo se limitan a correr los 3 comprobantes de la demo (y el de prompt injection) **una o dos veces**.
-9. **No preguntes nada al usuario: está durmiendo.** Si algo bloquea:
+9. **Puede no haber `OPENAI_API_KEY` esta noche.** Es lo esperado y no es un bloqueo.
+   - Construí todo igual: `agent/analyze.ts` real, implementado contra la API documentada en §2, más el analizador falso para los tests.
+   - Dejá `npm run agent:smoke` (`scripts/agent-smoke.ts`). Con la key presente, corre el analizador real sobre los 4 PNG de `demo/receipts/`, imprime la recomendación de cada uno, la compara con la esperada (§10) y termina con código ≠ 0 si alguna no coincide.
+   - Sin key, la app arranca igual y muestra en la solicitud: "Falta OPENAI_API_KEY: el agente no puede analizar".
+   - Para recorrer la UI sin key, permití `AI_MODE=fake` (por defecto `real`). En ese modo, el analizador falso devuelve salidas fijas según el sha256 de los PNG de demo, y la UI muestra un sello "ANÁLISIS DE PRUEBA (sin IA)".
+   - En `NOTAS_NOCHE.md`, dejá claro que el prompt **no fue probado contra el modelo real**.
+10. **No preguntes nada al usuario: está durmiendo.** Si algo bloquea:
    - Elegí la opción simple y segura.
    - Documentala en `NOTAS_NOCHE.md`.
    - Seguí con lo siguiente.
@@ -514,7 +520,8 @@ Hacé push al final de cada fase.
 3. **Fase C — pagos.**
    - `chain/*`, `payTool` simulado + mainnet con cadena falsa, `reconcile`, `verify`, atribución. Tests 7–9, 11 y 12.
 4. **Fase D — IA real.**
-   - `agent/prompt.ts` y `agent/analyze.ts`, `make-receipts`, corrida real sobre los PNG, ajuste de prompt.
+   - `agent/prompt.ts` y `agent/analyze.ts`, `make-receipts`, `agent:smoke`, `AI_MODE=fake`.
+   - Corrida real sobre los PNG y ajuste de prompt **solo si hay `OPENAI_API_KEY`**. Si no hay, se deja para la mañana (§15).
 5. **Fase E — UI.**
    - Las 3 vistas, login, server actions, ruta privada de comprobantes. Recorrido manual. Build ok.
 6. **Fase F — scripts y docs.**
@@ -532,7 +539,8 @@ Si el tiempo apremia, priorizá A–E con el flujo simulado completo y los tests
 
 1. `git pull && npm install` en la laptop.
 2. `cp .env.example .env.local`, completar los passcodes, `OPENAI_API_KEY` y `DEMO_COLLABORATOR_ADDRESS`.
-3. `npm run wallet:new` → imprime la dirección del agente.
-4. Fondear esa dirección con 5.000 wARS + unos 0,5 CELO.
-5. Cargar en la inscripción de la hackathon la wallet del agente, el repo `gastonfoncea/respend` y verificar que el código asignado sea `celo_e418a350ffec`.
-6. Con autorización explícita: `npm run agent:register -- --send`, luego `PAYMENT_MODE=mainnet` y el reembolso real de la demo.
+3. `npm run agent:smoke` → valida el prompt contra el modelo real (unos pocos centavos de dólar).
+4. `npm run wallet:new` → imprime la dirección del agente.
+5. Fondear esa dirección con 5.000 wARS + unos 0,5 CELO.
+6. Cargar en la inscripción de la hackathon la wallet del agente, el repo `gastonfoncea/respend` y verificar que el código asignado sea `celo_e418a350ffec`.
+7. Con autorización explícita: `npm run agent:register -- --send`, luego `PAYMENT_MODE=mainnet` y el reembolso real de la demo.
