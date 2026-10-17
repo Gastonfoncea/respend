@@ -423,6 +423,25 @@ function insertAuthorization(db: DB, r: RequestRow, policy: Policy, by: string, 
 
 // --- pago automático ---
 
+/** Un humano ya intervino en esta solicitud: el pago automático no aplica. */
+function humanIntervened(db: DB, r: RequestRow): boolean {
+  if (r.fields_source === "organizer") return true;
+  if (repo.listClarifications(db, r.id).some((c) => c.author === "organizer")) return true;
+  return repo.listAuthorizations(db, r.id).length > 0;
+}
+
+/** Tope de pagos automáticos en 24 h. null = automático (3 veces el límite por gasto). */
+export function setAutoPayDailyCap(ctx: Ctx, session: Session | null, cents: number | null): void {
+  const s = assertRole(session, ["organizer"]);
+  if (cents != null && (!Number.isSafeInteger(cents) || cents < 0)) throw new WorkflowError("El tope diario tiene que ser un monto válido, 0 o más.");
+  tx(ctx.db, () => {
+    const before = repo.getAutoPayDailyCap(ctx.db);
+    if (cents === (before.custom ? before.cents : null)) return;
+    repo.setAutoPayDailyCapCents(ctx.db, cents);
+    repo.audit(ctx.db, null, actorName(s), "auto_pay_daily_cap_updated", { before_cents: before.custom ? before.cents : null, after_cents: cents });
+  });
+}
+
 /** El organizador fija hasta cuánto (inclusive) el agente paga solo. 0 lo apaga. */
 export function setAutoPayLimit(ctx: Ctx, session: Session | null, cents: number): void {
   const s = assertRole(session, ["organizer"]);
@@ -443,15 +462,25 @@ export function setAutoPayLimit(ctx: Ctx, session: Session | null, cents: number
  * es menor o igual al límite que fijó el organizador y se cumplen los límites duros.
  * Devuelve el id de la autorización, o null si la solicitud tiene que ir al organizador.
  */
-export function autoAuthorize(ctx: Ctx, requestId: number): number | null {
+export function autoAuthorize(ctx: Ctx, requestId: number, nowMs = Date.now()): number | null {
   return tx(ctx.db, () => {
     const r = mustGet(ctx.db, requestId);
     if (r.status !== "analyzed" || r.recommendation !== "approve") return null;
     if (repo.getActiveAuthorization(ctx.db, requestId)) return null;
+    // Si un humano ya intervino (pidió aclaración, corrigió datos o hubo una autorización antes),
+    // la decisión es suya: el agente no paga solo.
+    if (humanIntervened(ctx.db, r)) return null;
     const limit = repo.getAutoPayLimitCents(ctx.db);
     if (limit <= 0 || r.amount_cents == null || r.amount_cents > limit) return null;
     const policy = repo.getPolicy(ctx.db);
     if (hardLimitError(ctx.db, r, policy)) return null;
+    // Tope de 24 h: limita cuánto puede pagar solo el agente aunque lleguen muchos gastos chicos.
+    const cap = repo.getAutoPayDailyCap(ctx.db).cents;
+    const used = repo.autoAuthorizedSinceCents(ctx.db, new Date(nowMs - 24 * 3600 * 1000).toISOString());
+    if (used + r.amount_cents > cap) {
+      repo.audit(ctx.db, r.id, "agente", "auto_pay_daily_cap_reached", { used_cents: used, cap_cents: cap, amount_cents: r.amount_cents });
+      return null;
+    }
     const { id, hash } = insertAuthorization(ctx.db, r, policy, `${repo.AUTO_PAY_ACTOR} ≤ ${formatArs(limit)}`, null);
     repo.setStatus(ctx.db, r.id, "authorized");
     repo.audit(ctx.db, r.id, "agente", "auto_authorized", {
@@ -483,6 +512,8 @@ export type PreviewResult =
       question: string;
       agentText: string | null;
       fake: boolean;
+      /** Si al enviarlo el agente lo pagaría solo (estimación: la decisión real se toma al enviar). */
+      autoPay: string | null;
     }
   | { ok: false; error: string };
 
@@ -569,8 +600,18 @@ export async function previewExpense(ctx: Ctx, session: Session | null, file: { 
   const question =
     cat === "indeterminada" && ai.clarification_questions[0] ? ai.clarification_questions[0] : "¿Para qué fue este gasto?";
 
+  let autoPay: string | null = null;
+  const limit = repo.getAutoPayLimitCents(ctx.db);
+  if (verdict === "fits" && limit > 0 && fields.amountCents != null) {
+    const used = repo.autoAuthorizedSinceCents(ctx.db, new Date(Date.now() - 24 * 3600 * 1000).toISOString());
+    if (fields.amountCents > limit) autoPay = `Supera el pago automático (${formatArs(limit)}): lo aprueba el organizador.`;
+    else if (used + fields.amountCents > repo.getAutoPayDailyCap(ctx.db).cents) autoPay = "Hoy el agente ya llegó a su tope de pagos automáticos: lo aprueba el organizador.";
+    else autoPay = `Es de ${formatArs(limit)} o menos: si al enviarlo sigue sin alertas, el agente te lo paga solo.`;
+  }
+
   return {
     ok: true,
+    autoPay,
     fields,
     categoryReasoning: ai.category_reasoning,
     verdict,

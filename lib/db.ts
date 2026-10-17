@@ -118,6 +118,8 @@ CREATE TABLE IF NOT EXISTS collaborator_profile (
 CREATE TABLE IF NOT EXISTS agent_settings (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   auto_pay_limit_cents INTEGER NOT NULL CHECK (auto_pay_limit_cents >= 0),
+  -- Tope de lo que el agente puede autorizar solo en 24 h. NULL = automático (3 veces el límite por gasto).
+  auto_pay_daily_cap_cents INTEGER CHECK (auto_pay_daily_cap_cents >= 0),
   updated_at TEXT NOT NULL
 );
 `;
@@ -132,6 +134,7 @@ export function openDb(file: string): DB {
   // Columnas agregadas después de la primera versión: se suman a bases existentes sin borrar datos.
   ensureColumn(db, "requests", "claimant_name", "TEXT");
   ensureColumn(db, "collaborator_profile", "name", "TEXT");
+  ensureColumn(db, "agent_settings", "auto_pay_daily_cap_cents", "INTEGER");
   return db;
 }
 

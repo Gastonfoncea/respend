@@ -217,9 +217,16 @@ export async function setMyProfileAction(fd: FormData) {
 export async function setAutoPayLimitAction(fd: FormData) {
   let target = "/agente";
   try {
+    const session = await getSession();
+    const ctx = server.ctx();
     const raw = str(fd, "limit").trim();
-    wf.setAutoPayLimit(server.ctx(), await getSession(), raw === "" ? 0 : parseArsToCents(raw));
-    target = withQuery(target, "ok", "Límite guardado.");
+    wf.setAutoPayLimit(ctx, session, raw === "" ? 0 : parseArsToCents(raw));
+    // Tope de 24 h: vacío = automático (3 veces el límite por gasto).
+    if (fd.has("dailyCap")) {
+      const cap = str(fd, "dailyCap").trim();
+      wf.setAutoPayDailyCap(ctx, session, cap === "" ? null : parseArsToCents(cap));
+    }
+    target = withQuery(target, "ok", "Pago automático guardado.");
   } catch (err) {
     target = withQuery(target, "error", errorMessage(err));
   }

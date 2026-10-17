@@ -2,7 +2,7 @@
 
 **Subí el comprobante. El agente lo contrasta con la política de gastos, explica su recomendación y prepara el reembolso.**
 
-Agente de rendición de gastos para un equipo cripto chico de LatAm. Piloto con **un** evento (meetup), **un** organizador, **un** colaborador y **una** política. Los comprobantes están en pesos (ARS) y los reembolsos se pagan en **wARS** (el token de Ripio que representa pesos argentinos) sobre **Celo mainnet**, desde una wallet dedicada del agente. **Cada pago requiere aprobación humana** del organizador.
+Agente de rendición de gastos para un equipo cripto chico de LatAm. Piloto con **un** evento (meetup), **un** organizador, **un** colaborador y **una** política. Los comprobantes están en pesos (ARS) y los reembolsos se pagan en **wARS** (el token de Ripio que representa pesos argentinos) sobre **Celo mainnet**, desde una wallet dedicada del agente. El agente tiene **autonomía acotada**: paga solo los gastos chicos y sin alertas (hasta un límite por gasto y un tope de 24 h que fija el organizador); todo lo demás lo aprueba el organizador.
 
 Hecho para el track "Stable Agents: LatAm" (Ripio × Celo) de la hackathon "Agents on Open Rails".
 
@@ -93,8 +93,9 @@ comprobante + descripción + aclaraciones ──► IA (lee y clasifica, NO deci
 
 - **La IA** (`lib/agent/`) extrae fecha, comercio, concepto, importe y moneda, clasifica la categoría, pide aclaraciones y reporta instrucciones sospechosas. Lo que viene en el comprobante, la descripción y las aclaraciones se trata como dato no confiable.
 - **El código** aplica la política (`lib/policy.ts`), detecta duplicados (`lib/duplicates.ts`), calcula el presupuesto (`lib/budget.ts`) y combina todo en la recomendación (`lib/agent/recommend.ts`).
-- **El humano** autoriza. Si hay alertas, tiene que tildar "Revisé las alertas" y escribir un motivo. El tope por comprobante y el presupuesto son límites duros: no se pueden pasar ni con motivo.
-- **La herramienta de pago** (`lib/chain/payTool.ts`, `executeAuthorizedReimbursement(requestId)`) recibe **solo** el `requestId`: monto, destinatario y token salen de la autorización guardada. **El LLM no tiene acceso a esta herramienta ni a la clave**: la IA solo produce un JSON de análisis, y el pago lo dispara la acción del organizador. La clave se lee únicamente en `lib/chain/signer.ts`.
+- **Pago automático** (`lib/autopay.ts`): el código —nunca la IA— autoriza y paga solo si la recomendación es `approve`, el monto es menor o igual al límite, entra en el tope de 24 h y ningún humano intervino. Todo lo demás espera al organizador.
+- **El humano** autoriza lo que no entra en el pago automático. Si hay alertas, tiene que tildar "Revisé las alertas" y escribir un motivo. El tope por comprobante y el presupuesto son límites duros: no se pueden pasar ni con motivo.
+- **La herramienta de pago** (`lib/chain/payTool.ts`, `executeAuthorizedReimbursement(requestId)`) recibe **solo** el `requestId`: monto, destinatario y token salen de la autorización guardada. **El LLM no tiene acceso a esta herramienta ni a la clave**: la IA solo produce un JSON de análisis, y el pago lo dispara la acción del organizador o, dentro del pago automático, el código. La clave se lee únicamente en `lib/chain/signer.ts`.
 - **Doble pago:** reserva en una transacción SQLite `BEGIN IMMEDIATE`, índice único de un pago vivo por solicitud, lock global de un pago en curso, `raw_tx` persistido antes de difundir y reconciliación que solo re-difunde la misma transacción firmada (ver `docs/INTEGRACION.md`).
 
 ---
@@ -103,7 +104,7 @@ comprobante + descripción + aclaraciones ──► IA (lee y clasifica, NO deci
 
 - **No valida autenticidad ni validez fiscal** de los comprobantes. Lee lo que dice la imagen.
 - **Los límites son de la app, no de un contrato.** Quien controle la clave del agente podría mover fondos fuera de la app.
-- **Aprobación humana obligatoria** para cada pago. El agente recomienda; no paga solo.
+- **Autonomía acotada, no total.** El agente paga solo montos chicos sin alertas, dentro de un tope de 24 h. Como no puede verificar que un ticket sea auténtico, el tope limita cuánto se puede perder con tickets inventados antes de que el organizador lo note.
 - **wARS no equivale a pesos en un banco.** Es un token en Celo; convertirlo a pesos bancarios depende de Ripio u otro servicio.
 - **Equivalencia nominal 1:1** en el piloto: 1 ARS del comprobante = 1 wARS, sin conversión ni tipo de cambio.
 - Comprobantes de demo **sintéticos** con comercios ficticios.

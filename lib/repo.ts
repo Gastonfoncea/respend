@@ -316,3 +316,28 @@ export function setAutoPayLimitCents(db: DB, cents: number): void {
     "INSERT INTO agent_settings (id, auto_pay_limit_cents, updated_at) VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET auto_pay_limit_cents = excluded.auto_pay_limit_cents, updated_at = excluded.updated_at",
   ).run(cents, nowIso());
 }
+
+/** Sin tope diario configurado, el agente puede autorizar solo hasta este múltiplo del límite por gasto en 24 h. */
+export const DEFAULT_DAILY_CAP_MULTIPLIER = 3;
+
+/** Tope de pagos automáticos en 24 h, en centavos. `custom` = lo fijó el organizador. */
+export function getAutoPayDailyCap(db: DB): { cents: number; custom: boolean } {
+  const row = db.prepare("SELECT auto_pay_daily_cap_cents AS v FROM agent_settings WHERE id = 1").get() as { v: number | null } | undefined;
+  if (row?.v != null) return { cents: row.v, custom: true };
+  return { cents: getAutoPayLimitCents(db) * DEFAULT_DAILY_CAP_MULTIPLIER, custom: false };
+}
+
+/** null vuelve al tope automático. */
+export function setAutoPayDailyCapCents(db: DB, cents: number | null): void {
+  db.prepare(
+    "INSERT INTO agent_settings (id, auto_pay_limit_cents, auto_pay_daily_cap_cents, updated_at) VALUES (1, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET auto_pay_daily_cap_cents = excluded.auto_pay_daily_cap_cents, updated_at = excluded.updated_at",
+  ).run(getAutoPayLimitCents(db), cents, nowIso());
+}
+
+/** Lo que el agente autorizó solo desde `sinceIso` y sigue vigente (pagado, pagándose o incierto). Las revocadas no cuentan. */
+export function autoAuthorizedSinceCents(db: DB, sinceIso: string): number {
+  const row = db
+    .prepare("SELECT COALESCE(SUM(amount_cents), 0) AS c FROM authorizations WHERE authorized_by LIKE ? AND revoked_at IS NULL AND created_at >= ?")
+    .get(`${AUTO_PAY_ACTOR}%`, sinceIso) as { c: number };
+  return row.c;
+}

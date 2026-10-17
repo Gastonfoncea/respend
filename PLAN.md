@@ -240,8 +240,10 @@ authorized ──(payTool)──► paying ──► reimbursed   (SOLO tras ver
 
 ### 6.1 Pago automático
 
-- El organizador fija un límite en la página del agente (`/wallet`), editable en cualquier momento. Por defecto 100 wARS; 0 lo apaga. No puede superar el tope por comprobante. Cada cambio queda en el `audit_log`.
+- El organizador fija un límite en la página del agente (`/agente`), editable en cualquier momento. Por defecto 100 wARS; 0 lo apaga. No puede superar el tope por comprobante. Cada cambio queda en el `audit_log`.
 - Después de cada análisis, el código (no la IA) autoriza y paga solo si: estado `analyzed`, recomendación `approve` (todos los checks pasan, sin duplicados, sin instrucciones sospechosas), monto **menor o igual** al límite y se cumplen los límites duros.
+- **Tope de 24 h:** lo que el agente autoriza solo en las últimas 24 h (autorizaciones vigentes; las revocadas no cuentan) no puede superar el tope diario. Sin configurar vale 3 veces el límite por gasto; el organizador lo cambia en `/agente`. Al llegar al tope se audita `auto_pay_daily_cap_reached` y el gasto va al organizador.
+- **Si un humano intervino, decide él:** no se paga solo si el organizador pidió una aclaración, corrigió los datos o ya hubo una autorización (aunque se haya revocado).
 - La autorización queda a nombre de "agente · pago automático ≤ $ X" y se audita como `auto_authorized`. El pago usa la misma herramienta (`requestId` solo), con las mismas protecciones de doble pago.
 - Si el pago falla, la solicitud queda en el estado que deje la herramienta para que el organizador decida.
 
@@ -454,7 +456,7 @@ Recipient de demo: variable `DEMO_COLLABORATOR_ADDRESS` en `.env.example`. El us
   - Límites honestos:
     - No valida autenticidad ni validez fiscal.
     - Los límites son de la app, no de un contrato.
-    - Aprobación humana obligatoria.
+    - Autonomía acotada: pago automático solo hasta el límite, sin alertas y dentro del tope de 24 h; el resto lo aprueba el organizador.
     - wARS no equivale a pesos bancarios.
     - Equivalencia nominal 1:1 del piloto sin conversión.
   - Arquitectura IA vs código.

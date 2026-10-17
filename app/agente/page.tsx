@@ -21,6 +21,8 @@ export default async function AgentePage({ searchParams }: { searchParams: Promi
   const limit = repo.getAutoPayLimitCents(db);
   const on = limit > 0;
   const paid = repo.autoPaidTotals(db);
+  const cap = repo.getAutoPayDailyCap(db);
+  const used24h = repo.autoAuthorizedSinceCents(db, new Date(Date.now() - 24 * 3600 * 1000).toISOString());
 
   const edit = (
     <Sheet triggerClassName="btn-link" trigger="Editar">
@@ -29,7 +31,19 @@ export default async function AgentePage({ searchParams }: { searchParams: Promi
         <label className="field">
           <span className="field-label">Límite</span>
           <input className="input mono" name="limit" inputMode="decimal" defaultValue={centsToDecimalString(limit)} autoComplete="off" />
-          <span className="field-help">0 para apagarlo. Máximo {shortArs(policy.capPerReceiptCents)}.</span>
+          <span className="field-help">Por gasto. 0 para apagarlo. Máximo {shortArs(policy.capPerReceiptCents)}.</span>
+        </label>
+        <label className="field">
+          <span className="field-label">Tope en 24 h</span>
+          <input
+            className="input mono"
+            name="dailyCap"
+            inputMode="decimal"
+            defaultValue={cap.custom ? centsToDecimalString(cap.cents) : ""}
+            placeholder={`Automático: ${centsToDecimalString(cap.cents)}`}
+            autoComplete="off"
+          />
+          <span className="field-help">Cuánto puede pagar solo en total en 24 h. Vacío = 3 veces el límite. Lo que pase el tope va a vos.</span>
         </label>
         <SubmitButton pendingText="Guardando…">Guardar</SubmitButton>
       </form>
@@ -50,7 +64,11 @@ export default async function AgentePage({ searchParams }: { searchParams: Promi
           <SectionLabel action={edit}>Pago automático</SectionLabel>
           <Rows>
             <Row k="Límite">{on ? shortArs(limit) : "Apagado"}</Row>
-            <Row k="Condición">Sin alertas</Row>
+            <Row k="Tope en 24 h">
+              {on ? `${shortArs(cap.cents)}${cap.custom ? "" : " (automático)"}` : "—"}
+            </Row>
+            <Row k="Usado en 24 h">{shortArs(used24h)}</Row>
+            <Row k="Condición">Sin alertas y sin intervención tuya</Row>
             <Row k="Pagados solos">
               {paid.count} · {shortArs(paid.cents)}
             </Row>
