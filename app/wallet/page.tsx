@@ -60,10 +60,10 @@ export default async function WalletPage({ searchParams }: { searchParams: Promi
     const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v);
     return <CollaboratorWallet session={session} error={one(sp.error)} ok={one(sp.ok)} />;
   }
-  const db = server.db();
+  const db = await server.db();
   const cfg = server.config();
-  const policy = repo.getPolicy(db);
-  const budget = getBudget(db);
+  const policy = await repo.getPolicy(db);
+  const budget = await getBudget(db);
   const w = await walletInfo(getAgentAddress());
   const isOrg = session.role === "organizer";
 

@@ -14,14 +14,14 @@ export async function runAutoPay(ctx: Ctx, requestId: number, payTool: PayTool):
   } catch (err) {
     // Falló antes de reservar el pago (por ejemplo, falta la clave o hay otro pago en curso):
     // la autorización sigue vigente y el organizador puede reintentar con "Pagar".
-    repo.audit(ctx.db, requestId, "sistema", "auto_pay_error", { error: (err as Error).message.slice(0, 300) });
+    await repo.audit(ctx.db, requestId, "sistema", "auto_pay_error", { error: (err as Error).message.slice(0, 300) });
     return null;
   }
 }
 
 /** Decide y paga en el mismo paso (tests y scripts). La app decide y paga en segundo plano por separado. */
 export async function maybeAutoPay(ctx: Ctx, requestId: number, payTool: PayTool): Promise<PayResult | null> {
-  if (autoAuthorize(ctx, requestId) == null) return null;
+  if ((await autoAuthorize(ctx, requestId)) == null) return null;
   return runAutoPay(ctx, requestId, payTool);
 }
 

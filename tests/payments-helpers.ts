@@ -22,10 +22,10 @@ export function spyAccount(): LocalAccount & { signCount: number } {
 }
 
 export async function authorizedRequest(seed = 1) {
-  const ctx = makeCtx();
-  const id = submitExpense(ctx, COLLAB, { description: `gasto ${seed}`, recipient: RECIPIENT, file: { bytes: tinyPng(seed), mime: "image/png" } });
+  const ctx = await makeCtx();
+  const id = await submitExpense(ctx, COLLAB, { description: `gasto ${seed}`, recipient: RECIPIENT, file: { bytes: tinyPng(seed), mime: "image/png" } });
   await analyzeRequest(ctx, id);
-  authorize(ctx, ORG, id, { verifiedAmountAndRecipient: true, reviewedAlerts: false, reason: "" });
+  await authorize(ctx, ORG, id, { verifiedAmountAndRecipient: true, reviewedAlerts: false, reason: "" });
   return { ctx, id };
 }
 

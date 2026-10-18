@@ -1,9 +1,11 @@
 // Utilidades de test: DB temporal, sesiones, analizador falso programable, PNG mínimos.
+import { after } from "node:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import zlib from "node:zlib";
-import { openDb, type DB } from "../lib/db.ts";
+import { openPglite, type DB, type PgliteDB } from "../lib/db.ts";
+import { createFsReceiptStore } from "../lib/receipts.ts";
 import * as repo from "../lib/repo.ts";
 import { DEMO_POLICY } from "../lib/demo.ts";
 import type { Ctx } from "../lib/workflow.ts";
@@ -48,15 +50,38 @@ export function tmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "respend-test-"));
 }
 
-export function makeCtx(analyzer: Analyzer = scriptedAnalyzer(() => aiOut()), dir = tmpDir()): Ctx & { dir: string; dbPath: string } {
-  const dbPath = path.join(dir, "respend.db");
-  const db = openDb(dbPath);
-  if (!repo.getEvent(db)) repo.upsertEvent(db, DEMO_POLICY);
-  return { db, receiptsDir: path.join(dir, "receipts"), analyzer, dir, dbPath };
+// Bases abiertas en este archivo de tests: se cierran al terminar, si no el proceso no sale.
+const openDbs: PgliteDB[] = [];
+after(async () => {
+  await Promise.all(openDbs.splice(0).map((db) => db.close().catch(() => {})));
+  if (templateDb) await (await templateDb).close().catch(() => {});
+});
+
+// Base modelo (migrada y con el evento de demo): cada test usa una copia, que es mucho más rápido que migrar de cero.
+let templateDb: Promise<PgliteDB> | null = null;
+function template(): Promise<PgliteDB> {
+  return (templateDb ??= (async () => {
+    const db = await openPglite();
+    await repo.upsertEvent(db, DEMO_POLICY);
+    return db;
+  })());
 }
 
-export function reopen(ctx: { dbPath: string }): DB {
-  return openDb(ctx.dbPath);
+export type TestCtx = Ctx & { dir: string };
+
+/** Contexto de test: Postgres en memoria (PGlite) con las migraciones de supabase/migrations y comprobantes en una carpeta temporal. */
+export async function makeCtx(analyzer: Analyzer = scriptedAnalyzer(() => aiOut()), dir = tmpDir()): Promise<TestCtx> {
+  const db = await (await template()).clone();
+  openDbs.push(db);
+  return { db, receipts: createFsReceiptStore(path.join(dir, "receipts")), analyzer, dir };
+}
+
+/**
+ * "Reinicio" del proceso: otra instancia de la herramienta sobre la misma base. PGlite en memoria es una
+ * sola conexión, así que devuelve la misma DB; lo que importa es que no quede estado en memoria del proceso.
+ */
+export function reopen(ctx: { db: DB }): DB {
+  return ctx.db;
 }
 
 let crcTable: number[] | null = null;

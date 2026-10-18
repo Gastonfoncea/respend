@@ -1,7 +1,7 @@
 // Detección de duplicados: mismo archivo (sha256) o mismos datos (comercio normalizado + fecha + importe).
 // Una coincidencia es motivo de revisión, no prueba de fraude.
 import { createHash } from "node:crypto";
-import type { DB } from "./db.ts";
+import type { Queryable } from "./db.ts";
 import { findByDateAmount, findByFileSha } from "./repo.ts";
 import type { DuplicateFlags, ReceiptFields } from "./types.ts";
 
@@ -20,12 +20,12 @@ export function normalizeMerchant(s: string): string {
     .trim();
 }
 
-export function findDuplicates(db: DB, requestId: number, fileSha256: string, fields: ReceiptFields): DuplicateFlags {
-  const file = findByFileSha(db, fileSha256, requestId).map((r) => r.id);
+export async function findDuplicates(q: Queryable, requestId: number, fileSha256: string, fields: ReceiptFields): Promise<DuplicateFlags> {
+  const file = (await findByFileSha(q, fileSha256, requestId)).map((r) => r.id);
   let data: number[] = [];
   if (fields.date && fields.amountCents != null && fields.merchant) {
     const m = normalizeMerchant(fields.merchant);
-    data = findByDateAmount(db, fields.date, fields.amountCents, requestId)
+    data = (await findByDateAmount(q, fields.date, fields.amountCents, requestId))
       .filter((r) => r.merchant != null && normalizeMerchant(r.merchant) === m)
       .map((r) => r.id);
   }

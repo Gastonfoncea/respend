@@ -8,7 +8,7 @@ import { reconcile } from "@/lib/chain/reconcile.ts";
 import { centsToDecimalString, centsToWei, formatArs, formatWars } from "@/lib/money.ts";
 import { CHAIN_ID, WARS_ADDRESS, txUrl } from "@/lib/config.ts";
 import type { PaymentMode } from "@/lib/config.ts";
-import type { Check, ClarificationRow, DuplicateFlags, Explanation, PaymentRow, RequestRow } from "@/lib/types.ts";
+import type { AuthorizationRow, Check, ClarificationRow, DuplicateFlags, Explanation, PaymentRow, RequestRow } from "@/lib/types.ts";
 import {
   authorizeAndPayAction,
   correctAction,
@@ -73,17 +73,17 @@ export default async function SolicitudPage({
   const sp = await searchParams;
   const id = Number.parseInt((await params).id, 10);
   if (!Number.isSafeInteger(id) || id <= 0) notFound();
-  const db = server.db();
+  const db = await server.db();
   const cfg = server.config();
-  let r = repo.getRequest(db, id);
+  let r = await repo.getRequest(db, id);
   if (!r) notFound();
 
   // Reconciliar al cargar si hay un pago mainnet vivo.
-  let latest = repo.latestPayment(db, id);
+  let latest = await repo.latestPayment(db, id);
   if (latest && latest.mode === "mainnet" && ["signed", "sent", "uncertain"].includes(latest.status)) {
     await reconcile(db, server.chain(), latest.id).catch(() => null);
-    r = repo.getRequest(db, id)!;
-    latest = repo.latestPayment(db, id);
+    r = (await repo.getRequest(db, id))!;
+    latest = await repo.latestPayment(db, id);
   }
 
   const isOrg = session.role === "organizer";
@@ -91,11 +91,11 @@ export default async function SolicitudPage({
   const explanation = parse<Explanation | null>(r.explanation, null);
   const checks = parse<Check[]>(r.checks, []);
   const dups = parse<DuplicateFlags>(r.duplicate_flags, { file: [], data: [] });
-  const thread = repo.listClarifications(db, id);
-  const auths = repo.listAuthorizations(db, id);
-  const payments = repo.listPayments(db, id);
-  const audit = repo.listAudit(db, id);
-  const policy = repo.getPolicy(db);
+  const thread = await repo.listClarifications(db, id);
+  const auths = await repo.listAuthorizations(db, id);
+  const payments = await repo.listPayments(db, id);
+  const audit = await repo.listAudit(db, id);
+  const policy = await repo.getPolicy(db);
   const missingKey = cfg.aiMode === "real" && !cfg.ai.apiKey;
   const canAuthorize =
     isOrg && ["analyzed", "needs_info", "payment_failed"].includes(r.status) && r.recommendation != null && r.recommendation !== "reject";
@@ -813,7 +813,7 @@ function PaymentRows({ p }: { p: PaymentRow }) {
   );
 }
 
-function Trace({ r, auths, payments }: { r: RequestRow; auths: ReturnType<typeof repo.listAuthorizations>; payments: PaymentRow[] }) {
+function Trace({ r, auths, payments }: { r: RequestRow; auths: AuthorizationRow[]; payments: PaymentRow[] }) {
   return (
     <ol className="timeline">
       <li>

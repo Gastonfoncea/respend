@@ -14,10 +14,10 @@ test("(a) hay receipt de éxito → confirmed", async () => {
   chain.mineAll();
   const r = await reconcile(ctx.db, chain, res.paymentId);
   assert.equal(r.status, "confirmed");
-  const p = repo.getPayment(ctx.db, res.paymentId)!;
+  const p = (await repo.getPayment(ctx.db, res.paymentId))!;
   assert.equal(p.attribution_ok, 1);
   assert.ok(p.block_number);
-  assert.equal(repo.getRequest(ctx.db, id)!.status, "reimbursed");
+  assert.equal((await repo.getRequest(ctx.db, id))!.status, "reimbursed");
 });
 
 test("(b) receipt reverted → failed, requiere nueva autorización", async () => {
@@ -29,9 +29,9 @@ test("(b) receipt reverted → failed, requiere nueva autorización", async () =
   chain.mineAll();
   const r = await reconcile(ctx.db, chain, res.paymentId);
   assert.equal(r.status, "failed");
-  assert.equal(repo.getRequest(ctx.db, id)!.status, "payment_failed");
-  assert.equal(repo.getActiveAuthorization(ctx.db, id), null);
-  assert.equal(getBudget(ctx.db).committedCents, 0);
+  assert.equal((await repo.getRequest(ctx.db, id))!.status, "payment_failed");
+  assert.equal(await repo.getActiveAuthorization(ctx.db, id), null);
+  assert.equal((await getBudget(ctx.db)).committedCents, 0);
 });
 
 test("(c) no se encuentra y el nonce está consumido → failed", async () => {
@@ -43,7 +43,7 @@ test("(c) no se encuentra y el nonce está consumido → failed", async () => {
   chain.consumeNonceExternally();
   const r = await reconcile(ctx.db, chain, res.paymentId);
   assert.equal(r.status, "failed");
-  assert.match(repo.getPayment(ctx.db, res.paymentId)!.error!, /nonce/);
+  assert.match((await repo.getPayment(ctx.db, res.paymentId))!.error!, /nonce/);
 });
 
 test("(d) no se encuentra y el nonce está libre → re-difunde el MISMO raw_tx sin firmar nada nuevo", async () => {
@@ -51,14 +51,14 @@ test("(d) no se encuentra y el nonce está libre → re-difunde el MISMO raw_tx 
   const { chain, pay, account } = mainnetSetup(ctx.db);
   chain.sendBehavior = "drop";
   const res = await pay(id);
-  const before = repo.getPayment(ctx.db, res.paymentId)!;
+  const before = (await repo.getPayment(ctx.db, res.paymentId))!;
   assert.equal(account.signCount, 1);
   chain.sendBehavior = "ok";
   const r = await reconcile(ctx.db, chain, res.paymentId);
   assert.equal(r.status, "sent");
   assert.equal(account.signCount, 1);
   assert.equal(chain.sentRaw.at(-1), before.raw_tx);
-  const after = repo.getPayment(ctx.db, res.paymentId)!;
+  const after = (await repo.getPayment(ctx.db, res.paymentId))!;
   assert.equal(after.tx_hash, before.tx_hash);
   assert.equal(after.nonce, before.nonce);
   assert.equal((await reconcile(ctx.db, chain, res.paymentId)).status, "confirmed");
@@ -70,12 +70,12 @@ test("(e) error de red al difundir → uncertain, nunca failed", async () => {
   chain.sendBehavior = "network_error";
   const res = await pay(id);
   assert.equal(res.status, "uncertain");
-  const p = repo.getPayment(ctx.db, res.paymentId)!;
+  const p = (await repo.getPayment(ctx.db, res.paymentId))!;
   assert.equal(p.status, "uncertain");
   assert.ok(p.raw_tx);
-  assert.equal(repo.getRequest(ctx.db, id)!.status, "payment_uncertain");
+  assert.equal((await repo.getRequest(ctx.db, id))!.status, "payment_uncertain");
   // Sigue comprometido en el presupuesto.
-  assert.equal(getBudget(ctx.db).committedCents, 150000);
+  assert.equal((await getBudget(ctx.db)).committedCents, 150000);
   // Reconciliar con la red caída tampoco lo marca como fallido.
   const r = await reconcile(ctx.db, { ...chain, getReceipt: async () => { throw new Error("ECONNRESET"); } } as never, res.paymentId);
   assert.equal(r.status, "uncertain");
@@ -94,5 +94,5 @@ test("(f) nodo atrasado: primera consulta sin receipt pero el nonce ya avanzó �
   lagging.getTransaction = async (h: `0x${string}`) => (txCalls++ === 0 ? null : chain.getTransaction(h));
   const r = await reconcile(ctx.db, lagging, res.paymentId);
   assert.equal(r.status, "confirmed");
-  assert.equal(repo.getRequest(ctx.db, id)!.status, "reimbursed");
+  assert.equal((await repo.getRequest(ctx.db, id))!.status, "reimbursed");
 });

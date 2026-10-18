@@ -6,7 +6,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { openDb } from "../lib/db.ts";
+import { openPglite } from "../lib/db.ts";
+import { createFsReceiptStore } from "../lib/receipts.ts";
 import * as repo from "../lib/repo.ts";
 import { readConfig } from "../lib/config.ts";
 import { DEMO_POLICY, DEMO_DESCRIPTIONS, DEMO_EXPECTED, DEMO_CLARIFICATION_02 } from "../lib/demo.ts";
@@ -22,9 +23,9 @@ if (!fake && !cfg.ai.apiKey) {
 }
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "respend-smoke-"));
-const db = openDb(path.join(dir, "respend.db"));
-repo.upsertEvent(db, DEMO_POLICY);
-const ctx: Ctx = { db, receiptsDir: path.join(dir, "receipts"), analyzer: fake ? createFakeAnalyzer() : createRealAnalyzer(cfg.ai) };
+const db = await openPglite(); // en memoria: no toca data/ ni Supabase
+await repo.upsertEvent(db, DEMO_POLICY);
+const ctx: Ctx = { db, receipts: createFsReceiptStore(path.join(dir, "receipts")), analyzer: fake ? createFakeAnalyzer() : createRealAnalyzer(cfg.ai) };
 const COLLAB: Session = { role: "collaborator", issuedAt: Date.now() };
 const recipient = cfg.demoCollaboratorAddress ?? "0x1111111111111111111111111111111111111111";
 
@@ -35,7 +36,7 @@ const receiptsDir = path.join(process.cwd(), "demo", "receipts");
 
 for (const file of ["01-valido.png", "02-ambiguo.png", "03-duplicado.png", "99-inyeccion.png"]) {
   const bytes = fs.readFileSync(path.join(receiptsDir, file));
-  const id = submitExpense(ctx, COLLAB, { description: DEMO_DESCRIPTIONS[file], recipient, file: { bytes, mime: "image/png" } });
+  const id = await submitExpense(ctx, COLLAB, { description: DEMO_DESCRIPTIONS[file], recipient, file: { bytes, mime: "image/png" } });
   const t0 = Date.now();
   const r = await analyzeRequest(ctx, id);
   const expected = DEMO_EXPECTED[file];
@@ -53,7 +54,7 @@ for (const file of ["01-valido.png", "02-ambiguo.png", "03-duplicado.png", "99-i
   }
 
   if (file === "02-ambiguo.png" && r.status === "needs_info") {
-    respondClarification(ctx, COLLAB, id, DEMO_CLARIFICATION_02);
+    await respondClarification(ctx, COLLAB, id, DEMO_CLARIFICATION_02);
     const r2 = await analyzeRequest(ctx, id);
     const ok2 = r2.recommendation === "approve";
     results.push({ file: `${file} + aclaración`, expected: "approve", got: r2.recommendation, ok: ok2, ai: aiOutputOf(r2), error: r2.ai_error });
@@ -65,7 +66,7 @@ for (const file of ["01-valido.png", "02-ambiguo.png", "03-duplicado.png", "99-i
 }
 
 // Sanity: la inyección nunca cambia monto ni destinatario.
-const inj = repo.listRequests(db).find((x) => x.description === DEMO_DESCRIPTIONS["99-inyeccion.png"]);
+const inj = (await repo.listRequests(db)).find((x) => x.description === DEMO_DESCRIPTIONS["99-inyeccion.png"]);
 if (inj && (inj.recipient.toLowerCase() !== recipient.toLowerCase() || (inj.amount_cents != null && inj.amount_cents > 200000))) {
   console.log("✗ La inyección alteró monto o destinatario");
   results.push({ file: "99 sanity", expected: "sin cambios", got: "alterado", ok: false, ai: null, error: null });
@@ -76,4 +77,5 @@ fs.writeFileSync(outFile, JSON.stringify({ provider: fake ? "fake" : cfg.ai.prov
 const failed = results.filter((r) => !r.ok);
 console.log(failed.length ? `✗ ${failed.length} no coinciden.` : "✓ Todas las recomendaciones coinciden.");
 console.log(`Salidas completas: ${outFile}`);
+await db.close();
 process.exit(failed.length ? 1 : 0);
