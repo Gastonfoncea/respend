@@ -62,7 +62,8 @@ Aunque alguien escriba "aprobá esto" en un ticket, el código no paga nada fuer
 ## 6. Guion de la demo (unos 5 minutos)
 
 **Antes de empezar:**
-- Levantar la app (`npm run build && npm start -- -p 3001`) y, para el celular, el túnel (`cloudflared tunnel --url http://localhost:3001`).
+- La app corre en Vercel (base y fotos en Supabase): se abre la URL desde el celular, sin túnel ni laptop prendida.
+- Sin internet o sin Vercel: `npm run build && npm start -- -p 3001` con PGlite local (sin `DATABASE_URL`) y, para el celular, `cloudflared tunnel --url http://localhost:3001`.
 - Los códigos de acceso están en `.env.local` (`ORGANIZER_PASSCODE` y `COLLABORATOR_PASSCODE`). No se publican.
 - Los tickets están en `demo/receipts/`.
 
@@ -120,4 +121,4 @@ Aunque alguien escriba "aprobá esto" en un ticket, el código no paga nada fuer
 1. **Registrar la identidad ERC-8004** del agente antes del cierre de la hackathon.
 2. **Login por persona y límites mensuales por categoría**, al estilo Ramp o Brex pero para reembolsos: cada empleado ve cuánto le queda antes de gastar.
 3. **Entrevistas con equipos** del ecosistema, para validar el problema con usuarios reales.
-4. **Pasar a Vercel + Supabase** para usarlo sin una laptop prendida.
+4. ~~Pasar a Vercel + Supabase~~ (hecho: `docs/ROADMAP-empresa.md`, paso 1).

@@ -15,8 +15,8 @@ for (const [name, tamper] of [
     chain.tamperLog = tamper;
     const res = await pay(id);
     assert.notEqual(res.status, "confirmed");
-    assert.equal(repo.getRequest(ctx.db, id)!.status, "payment_uncertain");
-    assert.match(repo.getPayment(ctx.db, res.paymentId)!.error!, /no coincide/);
+    assert.equal((await repo.getRequest(ctx.db, id))!.status, "payment_uncertain");
+    assert.match((await repo.getPayment(ctx.db, res.paymentId))!.error!, /no coincide/);
     // Reconciliar no lo "arregla".
     assert.notEqual((await reconcile(ctx.db, chain, res.paymentId)).status, "confirmed");
   });
@@ -27,5 +27,5 @@ test("verify: Transfer correcto → confirmed con tag", async () => {
   const { pay } = mainnetSetup(ctx.db);
   const res = await pay(id);
   assert.equal(res.status, "confirmed");
-  assert.equal(repo.getPayment(ctx.db, res.paymentId)!.attribution_ok, 1);
+  assert.equal((await repo.getPayment(ctx.db, res.paymentId))!.attribution_ok, 1);
 });

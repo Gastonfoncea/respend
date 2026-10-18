@@ -22,18 +22,18 @@ export async function submitExpenseAction(fd: FormData) {
     const session = await getSession();
     const file = fd.get("receipt");
     if (!(file instanceof File) || file.size === 0) throw new wf.WorkflowError("Falta la imagen del comprobante.");
-    const ctx = server.ctx();
+    const ctx = await server.ctx();
     // El destinatario sale siempre del perfil del colaborador, nunca del formulario.
-    const profile = repo.getCollaboratorProfile(ctx.db);
+    const profile = await repo.getCollaboratorProfile(ctx.db);
     if (!profile?.wallet || !profile.name) throw new wf.WorkflowError("Primero completá tu perfil (nombre y wallet de cobro) en \"Mi perfil\".");
     const recipient = profile.wallet;
-    const id = wf.submitExpense(ctx, session, {
+    const id = await wf.submitExpense(ctx, session, {
       description: str(fd, "description"),
       recipient,
       file: { bytes: new Uint8Array(await file.arrayBuffer()), mime: file.type },
     });
     await wf.analyzeRequest(ctx, id);
-    target = startAutoPay(ctx, id, reqPath(id));
+    target = await startAutoPay(ctx, id, reqPath(id));
   } catch (err) {
     target = withQuery("/presentar", "error", errorMessage(err));
   }
@@ -47,10 +47,10 @@ export async function retryAnalysisAction(fd: FormData) {
     assertRole(await getSession(), ["organizer", "collaborator"]);
     const id = idFrom(fd);
     target = reqPath(id);
-    const ctx = server.ctx();
+    const ctx = await server.ctx();
     const r = await wf.analyzeRequest(ctx, id);
     if (r.ai_error) target = withQuery(target, "error", r.ai_error);
-    else target = startAutoPay(ctx, id, target);
+    else target = await startAutoPay(ctx, id, target);
   } catch (err) {
     target = withQuery(`/solicitudes/${str(fd, "requestId")}`, "error", errorMessage(err));
   }
@@ -61,11 +61,11 @@ export async function respondAction(fd: FormData) {
   let target = `/solicitudes/${str(fd, "requestId")}`;
   try {
     const id = idFrom(fd);
-    const ctx = server.ctx();
-    wf.respondClarification(ctx, await getSession(), id, str(fd, "message"));
+    const ctx = await server.ctx();
+    await wf.respondClarification(ctx, await getSession(), id, str(fd, "message"));
     const r = await wf.analyzeRequest(ctx, id);
     if (r.ai_error) target = withQuery(target, "error", r.ai_error);
-    else target = startAutoPay(ctx, id, target);
+    else target = await startAutoPay(ctx, id, target);
   } catch (err) {
     target = withQuery(target, "error", errorMessage(err));
   }
@@ -76,7 +76,7 @@ export async function respondAction(fd: FormData) {
 export async function requestClarificationAction(fd: FormData) {
   let target = `/solicitudes/${str(fd, "requestId")}`;
   try {
-    wf.requestClarification(server.ctx(), await getSession(), idFrom(fd), str(fd, "message"));
+    await wf.requestClarification(await server.ctx(), await getSession(), idFrom(fd), str(fd, "message"));
     target = withQuery(target, "ok", "Se pidió la aclaración al colaborador.");
   } catch (err) {
     target = withQuery(target, "error", errorMessage(err));
@@ -87,7 +87,7 @@ export async function requestClarificationAction(fd: FormData) {
 export async function correctAction(fd: FormData) {
   let target = `/solicitudes/${str(fd, "requestId")}`;
   try {
-    wf.correctFields(server.ctx(), await getSession(), idFrom(fd), {
+    await wf.correctFields(await server.ctx(), await getSession(), idFrom(fd), {
       date: str(fd, "date") || null,
       merchant: str(fd, "merchant") || null,
       concept: str(fd, "concept") || null,
@@ -105,7 +105,7 @@ export async function correctAction(fd: FormData) {
 export async function rejectAction(fd: FormData) {
   let target = `/solicitudes/${str(fd, "requestId")}`;
   try {
-    wf.rejectRequest(server.ctx(), await getSession(), idFrom(fd), str(fd, "reason"));
+    await wf.rejectRequest(await server.ctx(), await getSession(), idFrom(fd), str(fd, "reason"));
     target = withQuery(target, "ok", "Solicitud rechazada.");
   } catch (err) {
     target = withQuery(target, "error", errorMessage(err));
@@ -120,13 +120,13 @@ export async function authorizeAndPayAction(fd: FormData) {
   try {
     const session = await getSession();
     const id = idFrom(fd);
-    const ctx = server.ctx();
-    wf.authorize(ctx, session, id, {
+    const ctx = await server.ctx();
+    await wf.authorize(ctx, session, id, {
       verifiedAmountAndRecipient: fd.get("verified") === "on",
       reviewedAlerts: fd.get("reviewedAlerts") === "on",
       reason: str(fd, "reason"),
     });
-    const res = await payAsOrganizer(session, id, server.payTool(), ctx.db);
+    const res = await payAsOrganizer(session, id, await server.payTool(), ctx.db);
     target = withQuery(target, res.status === "confirmed" ? "ok" : "error", payMessage(res.status, res.mode));
   } catch (err) {
     target = withQuery(target, "error", errorMessage(err));
@@ -140,7 +140,7 @@ export async function payAction(fd: FormData) {
   let target = `/solicitudes/${str(fd, "requestId")}`;
   try {
     const id = idFrom(fd);
-    const res = await payAsOrganizer(await getSession(), id, server.payTool(), server.db());
+    const res = await payAsOrganizer(await getSession(), id, await server.payTool(), await server.db());
     target = withQuery(target, res.status === "confirmed" ? "ok" : "error", payMessage(res.status, res.mode));
   } catch (err) {
     target = withQuery(target, "error", errorMessage(err));
@@ -154,9 +154,10 @@ export async function reconcileAction(fd: FormData) {
   try {
     assertRole(await getSession(), ["organizer"]);
     const id = idFrom(fd);
-    const p = repo.latestPayment(server.db(), id);
+    const db = await server.db();
+    const p = await repo.latestPayment(db, id);
     if (!p) throw new wf.WorkflowError("No hay pagos para reconciliar.");
-    const r = await reconcile(server.db(), p.mode === "mainnet" ? server.chain() : null, p.id);
+    const r = await reconcile(db, p.mode === "mainnet" ? server.chain() : null, p.id);
     target = withQuery(target, "ok", r.note);
   } catch (err) {
     target = withQuery(target, "error", errorMessage(err));
@@ -170,9 +171,9 @@ export async function reconcileAction(fd: FormData) {
  * en segundo plano, después de responder: la página del gasto muestra "El agente está pagando…" y se
  * refresca sola hasta que se confirma.
  */
-function startAutoPay(ctx: ReturnType<typeof server.ctx>, id: number, target: string): string {
-  if (wf.autoAuthorize(ctx, id) == null) return target;
-  const payTool = server.payTool();
+async function startAutoPay(ctx: wf.Ctx, id: number, target: string): Promise<string> {
+  if ((await wf.autoAuthorize(ctx, id)) == null) return target;
+  const payTool = await server.payTool();
   after(() => runAutoPay(ctx, id, payTool));
   return target;
 }
@@ -191,7 +192,7 @@ export async function updatePolicyAction(fd: FormData) {
       .split(",")
       .map((c) => c.trim().toLowerCase())
       .filter(Boolean);
-    wf.updatePolicy(server.ctx(), await getSession(), {
+    await wf.updatePolicy(await server.ctx(), await getSession(), {
       name: str(fd, "name"),
       startDate: str(fd, "startDate"),
       endDate: str(fd, "endDate"),
@@ -210,7 +211,7 @@ export async function updatePolicyAction(fd: FormData) {
 export async function setMyProfileAction(fd: FormData) {
   let target: string;
   try {
-    wf.setCollaboratorProfile(server.ctx(), await getSession(), { name: str(fd, "name"), wallet: str(fd, "wallet") });
+    await wf.setCollaboratorProfile(await server.ctx(), await getSession(), { name: str(fd, "name"), wallet: str(fd, "wallet") });
     target = withQuery("/wallet", "ok", "Perfil guardado. Los próximos gastos salen con este nombre y se pagan a esta wallet.");
   } catch (err) {
     target = withQuery("/wallet", "error", errorMessage(err));
@@ -224,13 +225,13 @@ export async function setAutoPayLimitAction(fd: FormData) {
   let target = "/agente";
   try {
     const session = await getSession();
-    const ctx = server.ctx();
+    const ctx = await server.ctx();
     const raw = str(fd, "limit").trim();
-    wf.setAutoPayLimit(ctx, session, raw === "" ? 0 : parseArsToCents(raw));
+    await wf.setAutoPayLimit(ctx, session, raw === "" ? 0 : parseArsToCents(raw));
     // Tope de 24 h: vacío = automático (3 veces el límite por gasto).
     if (fd.has("dailyCap")) {
       const cap = str(fd, "dailyCap").trim();
-      wf.setAutoPayDailyCap(ctx, session, cap === "" ? null : parseArsToCents(cap));
+      await wf.setAutoPayDailyCap(ctx, session, cap === "" ? null : parseArsToCents(cap));
     }
     target = withQuery(target, "ok", "Pago automático guardado.");
   } catch (err) {
@@ -245,7 +246,7 @@ export async function previewExpenseAction(_prev: wf.PreviewResult | null, fd: F
   try {
     const file = fd.get("receipt");
     if (!(file instanceof File) || file.size === 0) return { ok: false, error: "Falta la imagen del comprobante." };
-    return await wf.previewExpense(server.ctx(), await getSession(), { bytes: new Uint8Array(await file.arrayBuffer()) });
+    return await wf.previewExpense(await server.ctx(), await getSession(), { bytes: new Uint8Array(await file.arrayBuffer()) });
   } catch (err) {
     return { ok: false, error: errorMessage(err) };
   }

@@ -26,11 +26,11 @@ function fmtDate(iso: string): string {
 export default async function PoliticaPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const session = await requireRole();
   const sp = await searchParams;
-  const db = server.db();
+  const db = await server.db();
   const cfg = server.config();
-  const policy = repo.getPolicy(db);
-  const budget = getBudget(db);
-  const count = repo.countRequests(db);
+  const policy = await repo.getPolicy(db);
+  const budget = await getBudget(db);
+  const count = await repo.countRequests(db);
   const locked = count > 0;
   const isOrg = session.role === "organizer";
   const live = budget.committedCents - budget.paidCents;

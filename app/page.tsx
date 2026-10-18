@@ -17,7 +17,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<Rec
   const cfg = server.config();
   let eventName = "Respend";
   try {
-    eventName = repo.getPolicy(server.db()).name;
+    eventName = (await repo.getPolicy(await server.db())).name;
   } catch {
     /* sin base todavía: se muestra la marca */
   }

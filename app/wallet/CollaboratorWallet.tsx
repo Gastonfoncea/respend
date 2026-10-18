@@ -15,10 +15,10 @@ import { GroupedAddress } from "../components/ui.tsx";
 import { walletInfo } from "../components/wallet.ts";
 
 export default async function CollaboratorWallet({ session, error, ok }: { session: Session; error?: string; ok?: string }) {
-  const db = server.db();
+  const db = await server.db();
   const cfg = server.config();
-  const policy = repo.getPolicy(db);
-  const profile = repo.getCollaboratorProfile(db);
+  const policy = await repo.getPolicy(db);
+  const profile = await repo.getCollaboratorProfile(db);
   const wallet = profile?.wallet ?? null;
   const name = profile?.name ?? null;
   const complete = Boolean(wallet && name);

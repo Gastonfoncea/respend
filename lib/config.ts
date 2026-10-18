@@ -43,8 +43,18 @@ export interface AppConfig {
   collaboratorPasscode: string | null;
   sessionSecret: string | null;
   dataDir: string;
-  dbPath: string;
+  /** Postgres (Supabase). Sin esto se usa PGlite local en `pgliteDir` (solo desarrollo). */
+  databaseUrl: string | null;
+  /** CA de Supabase en PEM, para verificar el certificado del servidor de Postgres. */
+  databaseCaCert: string | null;
+  pgliteDir: string;
+  /** Supabase Storage. Sin URL o clave, los comprobantes van a `receiptsDir` (solo desarrollo). */
+  supabaseUrl: string | null;
+  supabaseSecretKey: string | null;
+  receiptsBucket: string;
   receiptsDir: string;
+  /** Corre en Vercel: ahí no hay disco persistente, así que Postgres y Storage son obligatorios. */
+  onVercel: boolean;
   demoCollaboratorAddress: string | null;
 }
 
@@ -107,8 +117,14 @@ export function readConfig(env: Env = process.env): AppConfig {
     collaboratorPasscode: nonEmpty(env.COLLABORATOR_PASSCODE),
     sessionSecret: nonEmpty(env.SESSION_SECRET),
     dataDir,
-    dbPath: path.join(dataDir, "respend.db"),
+    databaseUrl: nonEmpty(env.DATABASE_URL),
+    databaseCaCert: nonEmpty(env.DATABASE_CA_CERT)?.replace(/\\n/g, "\n") ?? null,
+    pgliteDir: path.join(dataDir, "pglite"),
+    supabaseUrl: nonEmpty(env.SUPABASE_URL),
+    supabaseSecretKey: nonEmpty(env.SUPABASE_SECRET_KEY),
+    receiptsBucket: nonEmpty(env.SUPABASE_RECEIPTS_BUCKET) ?? "tickets",
     receiptsDir: path.join(dataDir, "receipts"),
+    onVercel: Boolean(env.VERCEL),
     demoCollaboratorAddress: nonEmpty(env.DEMO_COLLABORATOR_ADDRESS),
   };
 }

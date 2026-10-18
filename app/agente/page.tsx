@@ -15,14 +15,14 @@ export const dynamic = "force-dynamic";
 export default async function AgentePage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const session = await requireRole(["organizer"]);
   const sp = await searchParams;
-  const db = server.db();
+  const db = await server.db();
   const cfg = server.config();
-  const policy = repo.getPolicy(db);
-  const limit = repo.getAutoPayLimitCents(db);
+  const policy = await repo.getPolicy(db);
+  const limit = await repo.getAutoPayLimitCents(db);
   const on = limit > 0;
-  const paid = repo.autoPaidTotals(db);
-  const cap = repo.getAutoPayDailyCap(db);
-  const used24h = repo.autoAuthorizedSinceCents(db, new Date(Date.now() - 24 * 3600 * 1000).toISOString());
+  const paid = await repo.autoPaidTotals(db);
+  const cap = await repo.getAutoPayDailyCap(db);
+  const used24h = await repo.autoAuthorizedSinceCents(db, new Date(Date.now() - 24 * 3600 * 1000).toISOString());
 
   const edit = (
     <Sheet triggerClassName="btn-link" trigger="Editar">

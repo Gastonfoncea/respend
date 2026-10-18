@@ -14,9 +14,9 @@ export default async function PresentarPage({ searchParams }: { searchParams: Pr
   const session = await requireRole(["collaborator"]);
   const sp = await searchParams;
   const cfg = server.config();
-  const db = server.db();
-  const policy = repo.getPolicy(db);
-  const profile = repo.getCollaboratorProfile(db);
+  const db = await server.db();
+  const policy = await repo.getPolicy(db);
+  const profile = await repo.getCollaboratorProfile(db);
   const wallet = profile?.wallet ?? null;
   const name = profile?.name ?? null;
   const complete = Boolean(wallet && name);

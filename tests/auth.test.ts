@@ -7,7 +7,7 @@ import { makeCtx, COLLAB, ORG, RECIPIENT, tinyPng } from "./helpers.ts";
 
 const SECRET = "test-secret-0123456789";
 
-test("cookie firmada: válida, adulterada y con otro secreto", () => {
+test("cookie firmada: válida, adulterada y con otro secreto", async () => {
   const tok = signSession({ role: "collaborator", issuedAt: Date.now() }, SECRET);
   assert.equal(verifySession(tok, SECRET)?.role, "collaborator");
   // Cambiar el rol en el payload sin re-firmar.
@@ -21,47 +21,47 @@ test("cookie firmada: válida, adulterada y con otro secreto", () => {
   assert.equal(verifySession(tok, null), null);
 });
 
-test("sesión vencida se rechaza", () => {
+test("sesión vencida se rechaza", async () => {
   const old = Date.now() - 8 * 24 * 3600 * 1000;
   assert.equal(verifySession(signSession({ role: "organizer", issuedAt: old }, SECRET), SECRET), null);
 });
 
-test("passcode", () => {
+test("passcode", async () => {
   assert.equal(checkPasscode("1234", "1234"), true);
   assert.equal(checkPasscode("1235", "1234"), false);
   assert.equal(checkPasscode("1234", null), false);
 });
 
 test("el colaborador no puede autorizar, corregir, rechazar, pedir aclaración ni cambiar la política", async () => {
-  const ctx = makeCtx();
-  const id = submitExpense(ctx, COLLAB, { description: "x", recipient: RECIPIENT, file: { bytes: tinyPng(1), mime: "image/png" } });
+  const ctx = await makeCtx();
+  const id = await submitExpense(ctx, COLLAB, { description: "x", recipient: RECIPIENT, file: { bytes: tinyPng(1), mime: "image/png" } });
   await analyzeRequest(ctx, id);
-  const forbidden = (fn: () => unknown) => assert.throws(fn, (e: unknown) => e instanceof AuthError && e.code === "forbidden");
-  forbidden(() => authorize(ctx, COLLAB, id, { verifiedAmountAndRecipient: true, reviewedAlerts: true, reason: "x" }));
-  forbidden(() => correctFields(ctx, COLLAB, id, { date: null, merchant: null, concept: null, amount: "1", currency: null, category: null }));
-  forbidden(() => rejectRequest(ctx, COLLAB, id, ""));
-  forbidden(() => requestClarification(ctx, COLLAB, id, "?"));
-  forbidden(() => updatePolicy(ctx, COLLAB, DEMO_POLICY));
+  const forbidden = (fn: () => Promise<unknown>) => assert.rejects(fn, (e: unknown) => e instanceof AuthError && e.code === "forbidden");
+  await forbidden(() => authorize(ctx, COLLAB, id, { verifiedAmountAndRecipient: true, reviewedAlerts: true, reason: "x" }));
+  await forbidden(() => correctFields(ctx, COLLAB, id, { date: null, merchant: null, concept: null, amount: "1", currency: null, category: null }));
+  await forbidden(() => rejectRequest(ctx, COLLAB, id, ""));
+  await forbidden(() => requestClarification(ctx, COLLAB, id, "?"));
+  await forbidden(() => updatePolicy(ctx, COLLAB, DEMO_POLICY));
   // Sin sesión.
-  assert.throws(() => authorize(ctx, null, id, { verifiedAmountAndRecipient: true, reviewedAlerts: true, reason: "" }), AuthError);
+  await assert.rejects(() => authorize(ctx, null, id, { verifiedAmountAndRecipient: true, reviewedAlerts: true, reason: "" }), AuthError);
   // El organizador no presenta gastos.
-  forbidden(() => submitExpense(ctx, ORG, { description: "x", recipient: RECIPIENT, file: { bytes: tinyPng(2), mime: "image/png" } }));
+  await forbidden(() => submitExpense(ctx, ORG, { description: "x", recipient: RECIPIENT, file: { bytes: tinyPng(2), mime: "image/png" } }));
 });
 
-test("la política se bloquea cuando hay solicitudes", () => {
-  const ctx = makeCtx();
-  updatePolicy(ctx, ORG, { ...DEMO_POLICY, name: "Otro nombre" });
-  submitExpense(ctx, COLLAB, { description: "x", recipient: RECIPIENT, file: { bytes: tinyPng(1), mime: "image/png" } });
-  assert.throws(() => updatePolicy(ctx, ORG, DEMO_POLICY), /bloqueada/);
+test("la política se bloquea cuando hay solicitudes", async () => {
+  const ctx = await makeCtx();
+  await updatePolicy(ctx, ORG, { ...DEMO_POLICY, name: "Otro nombre" });
+  await submitExpense(ctx, COLLAB, { description: "x", recipient: RECIPIENT, file: { bytes: tinyPng(1), mime: "image/png" } });
+  await assert.rejects(() => updatePolicy(ctx, ORG, DEMO_POLICY), /bloqueada/);
 });
 
-test("presentar valida imagen y wallet", () => {
-  const ctx = makeCtx();
-  assert.throws(
+test("presentar valida imagen y wallet", async () => {
+  const ctx = await makeCtx();
+  await assert.rejects(
     () => submitExpense(ctx, COLLAB, { description: "x", recipient: "0x123", file: { bytes: tinyPng(1), mime: "image/png" } }),
     /wallet/,
   );
-  assert.throws(
+  await assert.rejects(
     () => submitExpense(ctx, COLLAB, { description: "x", recipient: RECIPIENT, file: { bytes: new TextEncoder().encode("<svg/>"), mime: "image/png" } }),
     /JPEG, PNG o WebP/,
   );

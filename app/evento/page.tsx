@@ -54,10 +54,10 @@ function Item({ r, view, i, showClaimant = false, auto = false }: { r: RequestRo
 export default async function EventoPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const session = await requireRole();
   const sp = await searchParams;
-  const db = server.db();
+  const db = await server.db();
   const cfg = server.config();
-  const policy = repo.getPolicy(db);
-  const requests = repo.listRequests(db);
+  const policy = await repo.getPolicy(db);
+  const requests = await repo.listRequests(db);
   const isOrg = session.role === "organizer";
   let n = 0;
 
@@ -66,17 +66,17 @@ export default async function EventoPage({ searchParams }: { searchParams: Promi
       <Flash error={sp.error} ok={sp.ok} />
       <EventHead eventName={policy.name} mode={cfg.paymentMode} role={session.role} />
       <div className="page">
-        {isOrg ? await OrganizerHome() : CollaboratorHome()}
+        {isOrg ? await OrganizerHome() : await CollaboratorHome()}
       </div>
     </AppShell>
   );
 
   async function OrganizerHome() {
-    const budget = getBudget(db);
-    const limitCents = repo.getAutoPayLimitCents(db);
-    const day = repo.autoAuthorizedSince(db, new Date(Date.now() - 24 * 3600 * 1000).toISOString());
-    const digest = agentDigest(requests, { ...day, limitCents, capCents: repo.getAutoPayDailyCap(db).cents });
-    const autoIds = repo.autoAuthorizedRequestIds(db);
+    const budget = await getBudget(db);
+    const limitCents = await repo.getAutoPayLimitCents(db);
+    const day = await repo.autoAuthorizedSince(db, new Date(Date.now() - 24 * 3600 * 1000).toISOString());
+    const digest = agentDigest(requests, { ...day, limitCents, capCents: (await repo.getAutoPayDailyCap(db)).cents });
+    const autoIds = await repo.autoAuthorizedRequestIds(db);
     const live = budget.committedCents - budget.paidCents;
     const wallet = await walletInfo(getAgentAddress());
     // Lo pagable de verdad: el menor entre el presupuesto libre y el saldo real de wARS (menos lo ya autorizado).
@@ -168,8 +168,8 @@ export default async function EventoPage({ searchParams }: { searchParams: Promi
     );
   }
 
-  function CollaboratorHome() {
-    const collabAuto = repo.autoAuthorizedRequestIds(db);
+  async function CollaboratorHome() {
+    const collabAuto = await repo.autoAuthorizedRequestIds(db);
     const known = requests.filter((r) => r.amount_cents != null);
     const paid = known.filter((r) => r.status === "reimbursed").reduce((s, r) => s + r.amount_cents!, 0);
     const owed = known.filter((r) => r.status !== "reimbursed" && r.status !== "rejected").reduce((s, r) => s + r.amount_cents!, 0);

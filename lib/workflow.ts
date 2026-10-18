@@ -1,15 +1,15 @@
 // Casos de uso de una solicitud. Cada función que representa una acción humana recibe la sesión
 // y verifica el rol (assertRole). Las server actions solo leen la sesión y llaman acá.
-import fs from "node:fs";
-import path from "node:path";
-import type { DB } from "./db.ts";
+import type { DB, Queryable } from "./db.ts";
 import { tx } from "./db.ts";
+import type { ReceiptStore } from "./receipts.ts";
 import * as repo from "./repo.ts";
 import { assertRole, actorName } from "./auth.ts";
 import { ALLOWED_MIME, MAX_RECEIPT_BYTES } from "./config.ts";
 import { sha256Hex, findDuplicates } from "./duplicates.ts";
 import { getBudget } from "./budget.ts";
-import { evaluateChecks, isIsoDate, normalizeRecipient } from "./policy.ts";
+import { evaluateChecks, isIsoDate, normalizeRecipient, unsafeRecipientReason } from "./policy.ts";
+import type { PaymentMode } from "./config.ts";
 import { recommend, fieldsFromAi } from "./agent/recommend.ts";
 import { validateAiOutput, type AiOutput } from "./agent/prompt.ts";
 import type { Analyzer } from "./agent/analyze.ts";
@@ -21,12 +21,14 @@ export class WorkflowError extends Error {}
 
 export interface Ctx {
   db: DB;
-  receiptsDir: string;
+  receipts: ReceiptStore;
   analyzer: Analyzer;
+  /** Modo de pago de la app. En mainnet el pago automático no corre sobre análisis de prueba. */
+  paymentMode?: PaymentMode;
 }
 
-function mustGet(db: DB, id: number): RequestRow {
-  const r = repo.getRequest(db, id);
+async function mustGet(q: Queryable, id: number): Promise<RequestRow> {
+  const r = await repo.getRequest(q, id);
   if (!r) throw new WorkflowError(`No existe la solicitud #${id}`);
   return r;
 }
@@ -61,7 +63,7 @@ const EXT: Record<string, string> = { "image/png": "png", "image/jpeg": "jpg", "
 
 // --- política ---
 
-export function updatePolicy(ctx: Ctx, session: Session | null, p: Omit<Policy, "version">): void {
+export async function updatePolicy(ctx: Ctx, session: Session | null, p: Omit<Policy, "version">): Promise<void> {
   const s = assertRole(session, ["organizer"]);
   if (!p.name.trim()) throw new WorkflowError("El evento necesita un nombre.");
   if (!isIsoDate(p.startDate) || !isIsoDate(p.endDate) || p.startDate > p.endDate) throw new WorkflowError("Fechas inválidas.");
@@ -70,12 +72,12 @@ export function updatePolicy(ctx: Ctx, session: Session | null, p: Omit<Policy, 
   if (unknown.length) throw new WorkflowError(`Categorías no soportadas por el agente: ${unknown.join(", ")}.`);
   assertCents(p.capPerReceiptCents);
   assertCents(p.budgetCents);
-  tx(ctx.db, () => {
-    if (repo.countRequests(ctx.db) > 0) {
+  await tx(ctx.db, async (q) => {
+    if ((await repo.countRequests(q)) > 0) {
       throw new WorkflowError("La política quedó bloqueada porque ya hay solicitudes presentadas.");
     }
-    repo.upsertEvent(ctx.db, p);
-    repo.audit(ctx.db, null, actorName(s), "policy_updated", p);
+    await repo.upsertEvent(q, p);
+    await repo.audit(q, null, actorName(s), "policy_updated", p);
   });
 }
 
@@ -92,17 +94,23 @@ export function normalizeClaimantName(raw: string): string | null {
  * conservan el nombre y la wallet que tenían (el organizador aprobó ese destinatario exacto);
  * lo nuevo aplica a los gastos que presente después.
  */
-export function setCollaboratorProfile(ctx: Ctx, session: Session | null, input: { name: string; wallet: string }): repo.CollaboratorProfile {
+export async function setCollaboratorProfile(
+  ctx: Ctx,
+  session: Session | null,
+  input: { name: string; wallet: string },
+): Promise<repo.CollaboratorProfile> {
   const s = assertRole(session, ["collaborator"]);
   const name = normalizeClaimantName(input.name);
   if (!name) throw new WorkflowError("Escribí tu nombre (entre 2 y 60 caracteres).");
   const wallet = normalizeRecipient(input.wallet);
   if (!wallet) throw new WorkflowError("Esa no es una dirección válida (0x… de 40 caracteres hex).");
-  return tx(ctx.db, () => {
-    const before = repo.getCollaboratorProfile(ctx.db);
+  const unsafe = unsafeRecipientReason(wallet);
+  if (unsafe) throw new WorkflowError(unsafe);
+  return tx(ctx.db, async (q) => {
+    const before = await repo.getCollaboratorProfile(q);
     if (before?.name !== name || before?.wallet !== wallet) {
-      repo.setCollaboratorProfile(ctx.db, { name, wallet });
-      repo.audit(ctx.db, null, actorName(s), "collaborator_profile_updated", { before, after: { name, wallet } });
+      await repo.setCollaboratorProfile(q, { name, wallet });
+      await repo.audit(q, null, actorName(s), "collaborator_profile_updated", { before, after: { name, wallet } });
     }
     return { name, wallet };
   });
@@ -116,16 +124,18 @@ export interface SubmitInput {
   file: { bytes: Uint8Array; mime: string };
 }
 
-export function submitExpense(ctx: Ctx, session: Session | null, input: SubmitInput): number {
+export async function submitExpense(ctx: Ctx, session: Session | null, input: SubmitInput): Promise<number> {
   const s = assertRole(session, ["collaborator"]);
-  repo.getPolicy(ctx.db); // tira si no hay evento
+  await repo.getPolicy(ctx.db); // tira si no hay evento
   const description = input.description.trim();
   if (!description) throw new WorkflowError("Escribí una descripción breve del gasto.");
   if (description.length > 1000) throw new WorkflowError("La descripción es demasiado larga (máx. 1000 caracteres).");
   const recipient = normalizeRecipient(input.recipient);
   if (!recipient) throw new WorkflowError("La wallet de destino no es una dirección válida (0x… de 40 caracteres hex).");
+  const unsafe = unsafeRecipientReason(recipient);
+  if (unsafe) throw new WorkflowError(unsafe);
   // Si el colaborador configuró su wallet de cobro, el destinatario tiene que ser esa: no se acepta otra.
-  const profile = repo.getCollaboratorProfile(ctx.db);
+  const profile = await repo.getCollaboratorProfile(ctx.db);
   const profileWallet = profile?.wallet ?? null;
   if (profileWallet && profileWallet !== recipient) {
     throw new WorkflowError("La wallet de cobro tiene que ser la de tu perfil. Cambiala desde \"Mi wallet\".");
@@ -139,22 +149,20 @@ export function submitExpense(ctx: Ctx, session: Session | null, input: SubmitIn
   }
 
   const sha = sha256Hex(bytes);
-  fs.mkdirSync(ctx.receiptsDir, { recursive: true });
   const fileName = `${sha}.${EXT[sniffed]}`;
-  const full = path.join(/*turbopackIgnore: true*/ ctx.receiptsDir, fileName);
-  if (!fs.existsSync(/*turbopackIgnore: true*/ full)) fs.writeFileSync(full, bytes, { mode: 0o600 });
+  // El archivo se guarda antes de crear la solicitud: si falla, no queda una solicitud sin comprobante.
+  await ctx.receipts.put(fileName, bytes, sniffed);
 
-  return tx(ctx.db, () => {
+  return tx(ctx.db, async (q) => {
     const claimantName = profile?.name ?? null;
-    const id = repo.insertRequest(ctx.db, { description, recipient, claimantName, filePath: fileName, fileSha256: sha, mime: sniffed });
-    repo.audit(ctx.db, id, actorName(s), "submitted", { file_sha256: sha, recipient, claimant_name: claimantName });
+    const id = await repo.insertRequest(q, { description, recipient, claimantName, filePath: fileName, fileSha256: sha, mime: sniffed });
+    await repo.audit(q, id, actorName(s), "submitted", { file_sha256: sha, recipient, claimant_name: claimantName });
     return id;
   });
 }
 
-export function readReceipt(ctx: Ctx, r: RequestRow): Buffer {
-  const full = path.join(ctx.receiptsDir, path.basename(r.file_path));
-  return fs.readFileSync(full);
+export function readReceipt(ctx: Ctx, r: RequestRow): Promise<Buffer> {
+  return ctx.receipts.get(r.file_path);
 }
 
 // --- análisis ---
@@ -163,11 +171,11 @@ export function readReceipt(ctx: Ctx, r: RequestRow): Buffer {
  * Recalcula checks deterministas + recomendación con los campos vigentes. No llama a la IA.
  * Tiene que correr dentro de tx().
  */
-function reevaluate(db: DB, r: RequestRow, ai: AiOutput | null, fields: ReceiptFields, fieldsSource: "ai" | "organizer") {
-  const policy = repo.getPolicy(db);
-  const budget = getBudget(db);
-  const ownAuth = repo.getActiveAuthorization(db, r.id);
-  const duplicates = findDuplicates(db, r.id, r.file_sha256, fields);
+async function reevaluate(q: Queryable, r: RequestRow, ai: AiOutput | null, fields: ReceiptFields, fieldsSource: "ai" | "organizer") {
+  const policy = await repo.getPolicy(q);
+  const budget = await getBudget(q);
+  const ownAuth = await repo.getActiveAuthorization(q, r.id);
+  const duplicates = await findDuplicates(q, r.id, r.file_sha256, fields);
   const checks = evaluateChecks({
     policy,
     fields,
@@ -176,7 +184,7 @@ function reevaluate(db: DB, r: RequestRow, ai: AiOutput | null, fields: ReceiptF
     duplicates,
   });
   const result = recommend({ ai, fields, checks, fieldsSource });
-  repo.updateRequest(db, r.id, {
+  await repo.updateRequest(q, r.id, {
     receipt_date: fields.date,
     merchant: fields.merchant,
     concept: fields.concept,
@@ -198,11 +206,11 @@ function reevaluate(db: DB, r: RequestRow, ai: AiOutput | null, fields: ReceiptF
  * o de que el colaborador responda; la acción que lo dispara ya verificó el rol.
  */
 export async function analyzeRequest(ctx: Ctx, requestId: number): Promise<RequestRow> {
-  const r = mustGet(ctx.db, requestId);
+  const r = await mustGet(ctx.db, requestId);
   assertStatus(r, ["submitted"], "analizar");
-  const policy = repo.getPolicy(ctx.db);
-  const clarifications = repo.listClarifications(ctx.db, requestId);
-  const image = readReceipt(ctx, r);
+  const policy = await repo.getPolicy(ctx.db);
+  const clarifications = await repo.listClarifications(ctx.db, requestId);
+  const image = await readReceipt(ctx, r);
 
   const res = await ctx.analyzer({
     image,
@@ -213,15 +221,15 @@ export async function analyzeRequest(ctx: Ctx, requestId: number): Promise<Reque
     policy,
   });
 
-  tx(ctx.db, () => {
-    const now = mustGet(ctx.db, requestId);
+  await tx(ctx.db, async (q) => {
+    const now = await mustGet(q, requestId);
     if (now.status !== "submitted") throw new WorkflowError("La solicitud cambió mientras se analizaba.");
     if (!res.ok) {
-      repo.updateRequest(ctx.db, requestId, { ai_error: res.error, ai_model: res.model, ai_provider: res.provider });
-      repo.audit(ctx.db, requestId, "agente", "analysis_failed", { error: res.error, model: res.model });
+      await repo.updateRequest(q, requestId, { ai_error: res.error, ai_model: res.model, ai_provider: res.provider });
+      await repo.audit(q, requestId, "agente", "analysis_failed", { error: res.error, model: res.model });
       return;
     }
-    repo.updateRequest(ctx.db, requestId, {
+    await repo.updateRequest(q, requestId, {
       ai_output: JSON.stringify(res.output),
       ai_model: res.model,
       ai_provider: res.provider,
@@ -229,14 +237,14 @@ export async function analyzeRequest(ctx: Ctx, requestId: number): Promise<Reque
       ai_error: null,
       ai_fake: res.fake ? 1 : 0,
     });
-    const result = reevaluate(ctx.db, now, res.output, fieldsFromAi(res.output), "ai");
+    const result = await reevaluate(q, now, res.output, fieldsFromAi(res.output), "ai");
     if (result.recommendation === "needs_info") {
-      for (const q of result.questions) repo.addClarification(ctx.db, requestId, "agent", q);
-      repo.setStatus(ctx.db, requestId, "needs_info");
+      for (const question of result.questions) await repo.addClarification(q, requestId, "agent", question);
+      await repo.setStatus(q, requestId, "needs_info");
     } else {
-      repo.setStatus(ctx.db, requestId, "analyzed");
+      await repo.setStatus(q, requestId, "analyzed");
     }
-    repo.audit(ctx.db, requestId, "agente", "analyzed", {
+    await repo.audit(q, requestId, "agente", "analyzed", {
       model: res.model,
       provider: res.provider,
       fake: res.fake,
@@ -258,30 +266,30 @@ export function aiOutputOf(r: RequestRow): AiOutput | null {
 
 // --- aclaraciones ---
 
-export function respondClarification(ctx: Ctx, session: Session | null, requestId: number, message: string): void {
+export async function respondClarification(ctx: Ctx, session: Session | null, requestId: number, message: string): Promise<void> {
   const s = assertRole(session, ["collaborator"]);
   const msg = message.trim();
   if (!msg) throw new WorkflowError("Escribí una respuesta.");
   if (msg.length > 1000) throw new WorkflowError("La respuesta es demasiado larga (máx. 1000 caracteres).");
-  tx(ctx.db, () => {
-    const r = mustGet(ctx.db, requestId);
+  await tx(ctx.db, async (q) => {
+    const r = await mustGet(q, requestId);
     assertStatus(r, ["needs_info"], "responder");
-    repo.addClarification(ctx.db, requestId, "collaborator", msg);
-    repo.setStatus(ctx.db, requestId, "submitted");
-    repo.audit(ctx.db, requestId, actorName(s), "clarification_answered", { message: msg });
+    await repo.addClarification(q, requestId, "collaborator", msg);
+    await repo.setStatus(q, requestId, "submitted");
+    await repo.audit(q, requestId, actorName(s), "clarification_answered", { message: msg });
   });
 }
 
-export function requestClarification(ctx: Ctx, session: Session | null, requestId: number, message: string): void {
+export async function requestClarification(ctx: Ctx, session: Session | null, requestId: number, message: string): Promise<void> {
   const s = assertRole(session, ["organizer"]);
   const msg = message.trim();
   if (!msg) throw new WorkflowError("Escribí qué necesitás saber.");
-  tx(ctx.db, () => {
-    const r = mustGet(ctx.db, requestId);
+  await tx(ctx.db, async (q) => {
+    const r = await mustGet(q, requestId);
     assertStatus(r, ["analyzed", "needs_info"], "pedir aclaración sobre");
-    repo.addClarification(ctx.db, requestId, "organizer", msg.slice(0, 1000));
-    repo.setStatus(ctx.db, requestId, "needs_info");
-    repo.audit(ctx.db, requestId, actorName(s), "clarification_requested", { message: msg });
+    await repo.addClarification(q, requestId, "organizer", msg.slice(0, 1000));
+    await repo.setStatus(q, requestId, "needs_info");
+    await repo.audit(q, requestId, actorName(s), "clarification_requested", { message: msg });
   });
 }
 
@@ -301,7 +309,7 @@ export interface CorrectionInput {
   category: string | null;
 }
 
-export function correctFields(ctx: Ctx, session: Session | null, requestId: number, input: CorrectionInput): void {
+export async function correctFields(ctx: Ctx, session: Session | null, requestId: number, input: CorrectionInput): Promise<void> {
   const s = assertRole(session, ["organizer"]);
   const clean = (v: string | null) => (v && v.trim() ? v.trim().slice(0, 200) : null);
   const date = clean(input.date);
@@ -323,32 +331,32 @@ export function correctFields(ctx: Ctx, session: Session | null, requestId: numb
     currency: clean(input.currency)?.toUpperCase() ?? null,
     category: clean(input.category),
   };
-  tx(ctx.db, () => {
-    const r = mustGet(ctx.db, requestId);
+  await tx(ctx.db, async (q) => {
+    const r = await mustGet(q, requestId);
     assertStatus(r, ["analyzed", "needs_info", "authorized"], "corregir");
-    const auth = repo.getActiveAuthorization(ctx.db, requestId);
+    const auth = await repo.getActiveAuthorization(q, requestId);
     if (auth) {
-      repo.revokeAuthorization(ctx.db, auth.id, "El organizador corrigió los datos de la solicitud.");
-      repo.audit(ctx.db, requestId, actorName(s), "authorization_revoked", { authorization_id: auth.id, reason: "fields_corrected" });
+      await repo.revokeAuthorization(q, auth.id, "El organizador corrigió los datos de la solicitud.");
+      await repo.audit(q, requestId, actorName(s), "authorization_revoked", { authorization_id: auth.id, reason: "fields_corrected" });
     }
     const before = currentFields(r);
-    const result = reevaluate(ctx.db, r, aiOutputOf(r), fields, "organizer");
-    repo.setStatus(ctx.db, requestId, "analyzed");
-    repo.audit(ctx.db, requestId, actorName(s), "fields_corrected", { before, after: fields, recommendation: result.recommendation });
+    const result = await reevaluate(q, r, aiOutputOf(r), fields, "organizer");
+    await repo.setStatus(q, requestId, "analyzed");
+    await repo.audit(q, requestId, actorName(s), "fields_corrected", { before, after: fields, recommendation: result.recommendation });
   });
 }
 
 // --- rechazar ---
 
-export function rejectRequest(ctx: Ctx, session: Session | null, requestId: number, reason: string): void {
+export async function rejectRequest(ctx: Ctx, session: Session | null, requestId: number, reason: string): Promise<void> {
   const s = assertRole(session, ["organizer"]);
-  tx(ctx.db, () => {
-    const r = mustGet(ctx.db, requestId);
+  await tx(ctx.db, async (q) => {
+    const r = await mustGet(q, requestId);
     assertStatus(r, ["submitted", "analyzed", "needs_info", "authorized", "payment_failed"], "rechazar");
-    const auth = repo.getActiveAuthorization(ctx.db, requestId);
-    if (auth) repo.revokeAuthorization(ctx.db, auth.id, "Solicitud rechazada.");
-    repo.setStatus(ctx.db, requestId, "rejected");
-    repo.audit(ctx.db, requestId, actorName(s), "rejected", { reason: reason.trim().slice(0, 1000) || null });
+    const auth = await repo.getActiveAuthorization(q, requestId);
+    if (auth) await repo.revokeAuthorization(q, auth.id, "Solicitud rechazada.");
+    await repo.setStatus(q, requestId, "rejected");
+    await repo.audit(q, requestId, actorName(s), "rejected", { reason: reason.trim().slice(0, 1000) || null });
   });
 }
 
@@ -362,13 +370,13 @@ export interface AuthorizeInput {
   reason: string;
 }
 
-export function authorize(ctx: Ctx, session: Session | null, requestId: number, input: AuthorizeInput): number {
+export async function authorize(ctx: Ctx, session: Session | null, requestId: number, input: AuthorizeInput): Promise<number> {
   const s = assertRole(session, ["organizer"]);
   if (!input.verifiedAmountAndRecipient) throw new WorkflowError("Tildá \"Verifiqué monto y destinatario\".");
-  return tx(ctx.db, () => {
-    const r = mustGet(ctx.db, requestId);
+  return tx(ctx.db, async (q) => {
+    const r = await mustGet(q, requestId);
     assertStatus(r, ["analyzed", "needs_info", "payment_failed"], "autorizar");
-    if (repo.getActiveAuthorization(ctx.db, requestId)) throw new WorkflowError("Ya hay una autorización activa.");
+    if (await repo.getActiveAuthorization(q, requestId)) throw new WorkflowError("Ya hay una autorización activa.");
     if (!r.recommendation) throw new WorkflowError("La solicitud todavía no fue analizada.");
     if (r.recommendation === "reject") throw new WorkflowError("La recomendación es rechazar (fuera de política): no se puede autorizar.");
     const reason = input.reason.trim();
@@ -377,12 +385,12 @@ export function authorize(ctx: Ctx, session: Session | null, requestId: number, 
         throw new WorkflowError("Hay alertas: tildá \"Revisé las alertas\" y escribí el motivo para autorizar igual.");
       }
     }
-    const policy = repo.getPolicy(ctx.db);
-    const blocked = hardLimitError(ctx.db, r, policy);
+    const policy = await repo.getPolicy(q);
+    const blocked = await hardLimitError(q, r, policy);
     if (blocked) throw new WorkflowError(blocked);
-    const { id, hash } = insertAuthorization(ctx.db, r, policy, actorName(s), reason || null);
-    repo.setStatus(ctx.db, r.id, "authorized");
-    repo.audit(ctx.db, r.id, actorName(s), "authorized", {
+    const { id, hash } = await insertAuthorization(q, r, policy, actorName(s), reason || null);
+    await repo.setStatus(q, r.id, "authorized");
+    await repo.audit(q, r.id, actorName(s), "authorized", {
       authorization_id: id,
       binding_hash: hash,
       recommendation: r.recommendation,
@@ -394,19 +402,25 @@ export function authorize(ctx: Ctx, session: Session | null, requestId: number, 
 }
 
 /** Límites duros (no se pasan ni con motivo). Devuelve el motivo del bloqueo o null si se puede autorizar. */
-function hardLimitError(db: DB, r: RequestRow, policy: Policy): string | null {
+async function hardLimitError(q: Queryable, r: RequestRow, policy: Policy): Promise<string | null> {
   if (r.amount_cents == null) return "Falta el importe.";
   if (r.amount_cents <= 0) return "El importe tiene que ser mayor a cero.";
   if (r.amount_cents > policy.capPerReceiptCents) return "El importe supera el tope por comprobante.";
-  if (r.amount_cents > getBudget(db).availableCents) return "No alcanza el presupuesto disponible.";
+  if (r.amount_cents > (await getBudget(q)).availableCents) return "No alcanza el presupuesto disponible.";
   if (!normalizeRecipient(r.recipient)) return "La wallet de destino no es válida.";
   return null;
 }
 
-function insertAuthorization(db: DB, r: RequestRow, policy: Policy, by: string, note: string | null): { id: number; hash: string } {
+async function insertAuthorization(
+  q: Queryable,
+  r: RequestRow,
+  policy: Policy,
+  by: string,
+  note: string | null,
+): Promise<{ id: number; hash: string }> {
   const b = bindingFor(r, policy.version);
   const hash = bindingHash(b);
-  const id = repo.insertAuthorization(db, {
+  const id = await repo.insertAuthorization(q, {
     request_id: r.id,
     amount_cents: b.amount_cents,
     token_amount: b.token_amount,
@@ -424,35 +438,35 @@ function insertAuthorization(db: DB, r: RequestRow, policy: Policy, by: string, 
 // --- pago automático ---
 
 /** Un humano ya intervino en esta solicitud: el pago automático no aplica. */
-function humanIntervened(db: DB, r: RequestRow): boolean {
+async function humanIntervened(q: Queryable, r: RequestRow): Promise<boolean> {
   if (r.fields_source === "organizer") return true;
-  if (repo.listClarifications(db, r.id).some((c) => c.author === "organizer")) return true;
-  return repo.listAuthorizations(db, r.id).length > 0;
+  if ((await repo.listClarifications(q, r.id)).some((c) => c.author === "organizer")) return true;
+  return (await repo.listAuthorizations(q, r.id)).length > 0;
 }
 
 /** Tope de pagos automáticos en 24 h. null = automático (3 veces el límite por gasto). */
-export function setAutoPayDailyCap(ctx: Ctx, session: Session | null, cents: number | null): void {
+export async function setAutoPayDailyCap(ctx: Ctx, session: Session | null, cents: number | null): Promise<void> {
   const s = assertRole(session, ["organizer"]);
   if (cents != null && (!Number.isSafeInteger(cents) || cents < 0)) throw new WorkflowError("El tope diario tiene que ser un monto válido, 0 o más.");
-  tx(ctx.db, () => {
-    const before = repo.getAutoPayDailyCap(ctx.db);
+  await tx(ctx.db, async (q) => {
+    const before = await repo.getAutoPayDailyCap(q);
     if (cents === (before.custom ? before.cents : null)) return;
-    repo.setAutoPayDailyCapCents(ctx.db, cents);
-    repo.audit(ctx.db, null, actorName(s), "auto_pay_daily_cap_updated", { before_cents: before.custom ? before.cents : null, after_cents: cents });
+    await repo.setAutoPayDailyCapCents(q, cents);
+    await repo.audit(q, null, actorName(s), "auto_pay_daily_cap_updated", { before_cents: before.custom ? before.cents : null, after_cents: cents });
   });
 }
 
 /** El organizador fija hasta cuánto (inclusive) el agente paga solo. 0 lo apaga. */
-export function setAutoPayLimit(ctx: Ctx, session: Session | null, cents: number): void {
+export async function setAutoPayLimit(ctx: Ctx, session: Session | null, cents: number): Promise<void> {
   const s = assertRole(session, ["organizer"]);
   if (!Number.isSafeInteger(cents) || cents < 0) throw new WorkflowError("El límite tiene que ser un monto válido, 0 o más.");
-  const policy = repo.getPolicy(ctx.db);
+  const policy = await repo.getPolicy(ctx.db);
   if (cents > policy.capPerReceiptCents) throw new WorkflowError("El límite automático no puede superar el tope por comprobante.");
-  tx(ctx.db, () => {
-    const before = repo.getAutoPayLimitCents(ctx.db);
+  await tx(ctx.db, async (q) => {
+    const before = await repo.getAutoPayLimitCents(q);
     if (before === cents) return;
-    repo.setAutoPayLimitCents(ctx.db, cents);
-    repo.audit(ctx.db, null, actorName(s), "auto_pay_limit_updated", { before_cents: before, after_cents: cents });
+    await repo.setAutoPayLimitCents(q, cents);
+    await repo.audit(q, null, actorName(s), "auto_pay_limit_updated", { before_cents: before, after_cents: cents });
   });
 }
 
@@ -462,28 +476,38 @@ export function setAutoPayLimit(ctx: Ctx, session: Session | null, cents: number
  * es menor o igual al límite que fijó el organizador y se cumplen los límites duros.
  * Devuelve el id de la autorización, o null si la solicitud tiene que ir al organizador.
  */
-export function autoAuthorize(ctx: Ctx, requestId: number, nowMs = Date.now()): number | null {
-  return tx(ctx.db, () => {
-    const r = mustGet(ctx.db, requestId);
+export async function autoAuthorize(ctx: Ctx, requestId: number, nowMs = Date.now()): Promise<number | null> {
+  return tx(ctx.db, async (q) => {
+    const r = await mustGet(q, requestId);
     if (r.status !== "analyzed" || r.recommendation !== "approve") return null;
-    if (repo.getActiveAuthorization(ctx.db, requestId)) return null;
+    if (await repo.getActiveAuthorization(q, requestId)) return null;
     // Si un humano ya intervino (pidió aclaración, corrigió datos o hubo una autorización antes),
     // la decisión es suya: el agente no paga solo.
-    if (humanIntervened(ctx.db, r)) return null;
-    const limit = repo.getAutoPayLimitCents(ctx.db);
-    if (limit <= 0 || r.amount_cents == null || r.amount_cents > limit) return null;
-    const policy = repo.getPolicy(ctx.db);
-    if (hardLimitError(ctx.db, r, policy)) return null;
-    // Tope de 24 h: limita cuánto puede pagar solo el agente aunque lleguen muchos gastos chicos.
-    const cap = repo.getAutoPayDailyCap(ctx.db).cents;
-    const used = repo.autoAuthorizedSinceCents(ctx.db, new Date(nowMs - 24 * 3600 * 1000).toISOString());
-    if (used + r.amount_cents > cap) {
-      repo.audit(ctx.db, r.id, "agente", "auto_pay_daily_cap_reached", { used_cents: used, cap_cents: cap, amount_cents: r.amount_cents });
+    if (await humanIntervened(q, r)) return null;
+    // Un análisis de prueba (sin IA) nunca mueve plata real.
+    if (ctx.paymentMode === "mainnet" && r.ai_fake) {
+      await repo.audit(q, r.id, "agente", "auto_pay_blocked", { reason: "fake_ai_in_mainnet" });
       return null;
     }
-    const { id, hash } = insertAuthorization(ctx.db, r, policy, `${repo.AUTO_PAY_ACTOR} ≤ ${formatArs(limit)}`, null);
-    repo.setStatus(ctx.db, r.id, "authorized");
-    repo.audit(ctx.db, r.id, "agente", "auto_authorized", {
+    const unsafe = unsafeRecipientReason(r.recipient);
+    if (unsafe) {
+      await repo.audit(q, r.id, "agente", "auto_pay_blocked", { reason: "unsafe_recipient", detail: unsafe });
+      return null;
+    }
+    const limit = await repo.getAutoPayLimitCents(q);
+    if (limit <= 0 || r.amount_cents == null || r.amount_cents > limit) return null;
+    const policy = await repo.getPolicy(q);
+    if (await hardLimitError(q, r, policy)) return null;
+    // Tope de 24 h: limita cuánto puede pagar solo el agente aunque lleguen muchos gastos chicos.
+    const cap = (await repo.getAutoPayDailyCap(q)).cents;
+    const used = await repo.autoAuthorizedSinceCents(q, new Date(nowMs - 24 * 3600 * 1000).toISOString());
+    if (used + r.amount_cents > cap) {
+      await repo.audit(q, r.id, "agente", "auto_pay_daily_cap_reached", { used_cents: used, cap_cents: cap, amount_cents: r.amount_cents });
+      return null;
+    }
+    const { id, hash } = await insertAuthorization(q, r, policy, `${repo.AUTO_PAY_ACTOR} ≤ ${formatArs(limit)}`, null);
+    await repo.setStatus(q, r.id, "authorized");
+    await repo.audit(q, r.id, "agente", "auto_authorized", {
       authorization_id: id,
       binding_hash: hash,
       amount_cents: r.amount_cents,
@@ -540,19 +564,19 @@ export async function previewExpense(ctx: Ctx, session: Session | null, file: { 
   const mime = sniffMime(bytes);
   if (!mime || !(ALLOWED_MIME as readonly string[]).includes(mime)) throw new WorkflowError("La imagen tiene que ser JPEG, PNG o WebP.");
 
-  const policy = repo.getPolicy(ctx.db);
+  const policy = await repo.getPolicy(ctx.db);
   const sha = sha256Hex(bytes);
   const res = await ctx.analyzer({ image: Buffer.from(bytes), mime, fileSha256: sha, description: "", clarifications: [], policy });
   if (!res.ok) return { ok: false, error: res.error };
 
   const ai = res.output;
   const fields = fieldsFromAi(ai);
-  const duplicates = findDuplicates(ctx.db, -1, sha, fields);
+  const duplicates = await findDuplicates(ctx.db, -1, sha, fields);
   const all = evaluateChecks({
     policy,
     fields,
     recipient: "",
-    availableForRequestCents: getBudget(ctx.db).availableCents,
+    availableForRequestCents: (await getBudget(ctx.db)).availableCents,
     duplicates,
   });
   const checks = all.filter((c) => PREVIEW_RULES.includes(c.rule));
@@ -601,11 +625,12 @@ export async function previewExpense(ctx: Ctx, session: Session | null, file: { 
     cat === "indeterminada" && ai.clarification_questions[0] ? ai.clarification_questions[0] : "¿Para qué fue este gasto?";
 
   let autoPay: string | null = null;
-  const limit = repo.getAutoPayLimitCents(ctx.db);
+  const limit = await repo.getAutoPayLimitCents(ctx.db);
   if (verdict === "fits" && limit > 0 && fields.amountCents != null) {
-    const used = repo.autoAuthorizedSinceCents(ctx.db, new Date(Date.now() - 24 * 3600 * 1000).toISOString());
+    const used = await repo.autoAuthorizedSinceCents(ctx.db, new Date(Date.now() - 24 * 3600 * 1000).toISOString());
+    const cap = (await repo.getAutoPayDailyCap(ctx.db)).cents;
     if (fields.amountCents > limit) autoPay = `Supera el pago automático (${formatArs(limit)}): lo aprueba el organizador.`;
-    else if (used + fields.amountCents > repo.getAutoPayDailyCap(ctx.db).cents) autoPay = "Hoy el agente ya llegó a su tope de pagos automáticos: lo aprueba el organizador.";
+    else if (used + fields.amountCents > cap) autoPay = "Hoy el agente ya llegó a su tope de pagos automáticos: lo aprueba el organizador.";
     else autoPay = `Es de ${formatArs(limit)} o menos: si al enviarlo sigue sin alertas, el agente te lo paga solo.`;
   }
 

@@ -21,6 +21,23 @@ export function normalizeRecipient(addr: string): string | null {
   return getAddress(a);
 }
 
+/** Direcciones que nunca son un destino real: quemado, de prueba o sin dueño. */
+const BURN_ADDRESSES = new Set(["0x000000000000000000000000000000000000dead", "0xdead000000000000000000000000000000000000"]);
+
+/**
+ * Motivo por el que una dirección no puede recibir un reembolso, o null si está bien.
+ * Rechaza la dirección cero, las de un solo dígito repetido (0x1111…1111, 0xaaaa…aaaa)
+ * y las de quemado conocidas. La comparación con la wallet del agente la hace la herramienta de pago.
+ */
+export function unsafeRecipientReason(addr: string): string | null {
+  const hex = addr.trim().toLowerCase().replace(/^0x/, "");
+  if (!/^[0-9a-f]{40}$/.test(hex)) return "La wallet de destino no es una dirección válida.";
+  if (/^0+$/.test(hex)) return "La wallet de destino es la dirección cero: nadie la controla.";
+  if (/^(.)\1+$/.test(hex)) return "La wallet de destino parece de prueba (un solo dígito repetido): nadie la controla.";
+  if (BURN_ADDRESSES.has(`0x${hex}`)) return "La wallet de destino es una dirección de quemado: los fondos se perderían.";
+  return null;
+}
+
 export function isIsoDate(s: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
   const d = new Date(`${s}T00:00:00Z`);
