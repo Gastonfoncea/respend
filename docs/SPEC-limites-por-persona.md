@@ -1,162 +1,188 @@
-# SPEC — Límites mensuales por persona y por categoría
+# SPEC — Presupuesto por evento y por persona, con pago automático
 
-Estado: **propuesta, pendiente de aprobación del usuario.** No implementar hasta que esté aprobada.
-Rama sugerida: `feat/limites-por-persona`. `main` queda estable para la demo del workshop.
+Estado: **modelo aprobado por el usuario el 18/10/2026.** Falta implementar.
+Reemplaza la versión anterior de esta spec (límites mensuales por categoría, un humano autoriza cada pago).
 
-## 1. Problema real que resuelve
+Rama: `feat/limites-por-persona`. Se implementa **después** de la migración a Vercel + Supabase (`feat/vercel-supabase`, ver `docs/ROADMAP-empresa.md`). El SQL de §3 es orientativo: se escribe en Postgres sobre el esquema migrado.
 
-En un equipo que reembolsa gastos, el organizador hoy tiene que recordar cuánto gastó cada persona en cada rubro. Los empleados no saben cuánto les queda hasta que alguien les dice "esto no te lo puedo devolver".
+Contexto de mercado y por qué este modelo: `reports/Valor real de Respend.md`.
 
-Herramientas como Ramp, Brex, Pleo o Expensify resuelven esto con **límites por persona y por categoría que se renuevan por período**.
+---
 
-Nosotros hacemos lo mismo para **reembolsos**:
-- Cada persona ve **antes de gastar** cuánto le queda este mes en cada categoría.
-- El agente interpreta el comprobante.
-- El código aplica el límite.
-- Un humano autoriza cada pago.
+## 1. Caso de uso
 
-**Diferencia con una tarjeta corporativa, a explicar sin exagerar:** la tarjeta bloquea el gasto en el momento. Un reembolso se evalúa **después** de que el empleado pagó. Por eso:
-- Mostramos el saldo disponible antes de gastar.
-- Definimos qué pasa con el excedente: pago parcial más excepción.
+> El owner aprueba **una vez, por adelantado**, asignando presupuesto a cada persona. Después, cada comprobante que entra en ese presupuesto se paga solo y al instante. Lo que no entra, lo decide el owner.
 
-## 2. Decisiones tomadas (17/10/2026)
+Ejemplo:
+1. Ana (owner) crea el presupuesto "Meetup 25/10", del 20/10 al 27/10, con pago automático hasta $ 50.000 por ticket.
+2. Le asigna a Juan $ 80.000 (categoría opcional: catering).
+3. Juan ve "Tenés $ 80.000 para catering del Meetup 25/10".
+4. Juan gasta de su bolsillo y manda la foto del ticket por $ 42.000.
+5. El código valida todo (§4.2) y el reintegro sale solo: "Cobraste $ 42.000. Te quedan $ 38.000".
+6. Si algo no cierra, no se paga nada solo: va a Ana, que elige entre tres opciones (§4.4).
+
+**Diferencia con Ramp, a explicar sin exagerar:** Ramp bloquea el gasto en el momento con una tarjeta. Respend sigue siendo un reintegro: el colaborador pone la plata. Lo que cambia es que sabe de antemano cuánto puede gastar y cobra al instante.
+
+## 2. Decisiones (18/10/2026)
 
 | Tema | Decisión |
 |---|---|
-| Excedente sobre el límite | **Pago parcial + excepción.** Se propone reembolsar hasta lo que queda. El organizador puede autorizar el excedente como excepción, con motivo obligatorio que queda registrado. |
-| Período | **Mensual**, por mes calendario de la **fecha del comprobante**, en hora de Argentina. |
-| Límites | **Iguales para todo el equipo por categoría**, con **ajuste por persona** (override) que define el organizador. |
+| Unidad de presupuesto | **Presupuesto = evento con nombre y fechas.** Un mes es un presupuesto más ("Octubre 2026"). Lo recurrente queda para después. |
+| Asignación | Presupuesto + persona + monto, **categoría opcional**. Sin categoría, vale para cualquier gasto dentro de la política. |
+| Aprobación humana | La asignación **es** la aprobación. Dentro de ella, el pago es automático. |
+| Máximo por ticket | **Uno por presupuesto.** Un ticket por encima de ese monto **requiere aprobación** del owner, aunque entre en el saldo. (Un modo "pagá y avisame" queda para después.) |
+| Tope de 24 h | **Se mantiene** como freno de seguridad de la wallet del agente (`getAutoPayDailyCap`). |
+| Ticket que supera el saldo | **El código nunca paga parcial.** Va entero al owner con tres opciones: pagar hasta el saldo, pagar todo como excepción con motivo, o rechazar. |
+| Intervención humana | Igual que hoy: si un humano ya intervino en la solicitud, no se paga sola. |
 
-Decisiones que tomé yo, a confirmar:
-- **Fechas válidas:** la regla "fechas del evento" se reemplaza por "antigüedad máxima del comprobante", 60 días por defecto. Con límites mensuales, un rango fijo de fechas deja de tener sentido.
-- **Categorías configurables:** cada categoría tiene clave, nombre y una **descripción** que el agente usa para clasificar (por ejemplo, "Transporte: taxis, remises, colectivos, nafta para traslados de trabajo").
-- **Wallet del empleado:** queda fijada en su perfil y solo la cambia el organizador. Ya no se escribe en cada solicitud, lo que evita que alguien desvíe un pago cambiando la dirección.
-- **Privacidad:** cada colaborador ve solo sus propias solicitudes y sus límites. El organizador ve todo.
-- **Presupuesto total** (saldo asignado a la wallet del agente): sigue siendo un tope duro.
-- **Tope por comprobante:** pasa a ser opcional.
+Decisiones heredadas de la versión anterior, que siguen en pie:
+- **Wallet del colaborador** fijada en su perfil; solo la cambia el organizador. Ya no se escribe en cada solicitud.
+- **Privacidad:** cada colaborador ve solo sus solicitudes y sus asignaciones. El organizador ve todo.
+- **Presupuesto total** (saldo de la wallet del agente): sigue siendo un tope duro.
+- **Categorías configurables** con clave, nombre y una descripción que el agente usa para clasificar.
 
-## 3. Modelo de datos
+## 3. Modelo de datos (orientativo, en Postgres)
 
-Es un piloto: no se migran datos viejos. Se sube la versión del esquema y `demo:reset` recrea todo.
+Es un piloto: no se migran datos viejos de la demo.
 
 ```sql
-team_policy(id=1, name, budget_cents, cap_per_receipt_cents NULL, max_receipt_age_days,
-            policy_version, created_at, updated_at)
+budgets(id, name, starts_on DATE, ends_on DATE,
+        autopay_max_per_receipt_cents /* 0 = sin pago automático */,
+        autopay_requires_qr BOOLEAN DEFAULT true,
+        status CHECK (status IN ('open','closed')), created_by, created_at, updated_at)
 
-categories(key TEXT PK /* [a-z_] */, name, description, monthly_limit_cents, active)
+categories(key PK /* [a-z_] */, name, description, active)
 
 members(id, name, role CHECK (role IN ('organizer','collaborator')),
-        passcode_hash /* scrypt + salt */, wallet /* checksummed, NULL para organizer */,
-        active, created_at, updated_at)
+        wallet /* checksummed, NULL para organizer */, active, created_at, updated_at)
+        -- el login lo resuelve el paso 2 del roadmap (Supabase Auth)
 
-member_limits(member_id, category_key, monthly_limit_cents, PRIMARY KEY(member_id, category_key))
+assignments(id, budget_id, member_id, category_key NULL, amount_cents,
+            created_by, created_at, updated_at,
+            UNIQUE (budget_id, member_id, category_key))
+            -- category_key NULL = "cualquier categoría"; una sola asignación sin categoría por persona y presupuesto
 
-requests(+ member_id NOT NULL, + period TEXT /* 'YYYY-MM' derivado de receipt_date */)
+requests(+ budget_id NOT NULL, + member_id NOT NULL, + assignment_id NULL,
+         + qr_cuit, + qr_tipo_cmp, + qr_pto_vta, + qr_nro_cmp, + qr_cae, + qr_importe_cents, + qr_fecha,
+         + qr_status CHECK (qr_status IN ('valid','mismatch','missing','unreadable')))
          -- recipient = members.wallet al momento de presentar
 
-authorizations(+ member_id, + category_key, + period,
-               + requested_cents /* importe del ticket */,
-               + approved_cents  /* lo que se paga */,
-               + within_limit_cents, + exception_cents, + exception_reason)
-         -- amount_cents pasa a ser approved_cents
+authorizations(+ assignment_id, + requested_cents /* importe del ticket */,
+               + approved_cents /* lo que se paga */, + exception_cents, + exception_reason,
+               + mode CHECK (mode IN ('auto','full','up_to_balance','exception')))
+               -- amount_cents pasa a ser approved_cents
+
+UNIQUE (qr_cuit, qr_tipo_cmp, qr_pto_vta, qr_nro_cmp) en requests no rechazadas
+               -- duplicado por comprobante ARCA, además del sha256 del archivo
 ```
 
-## 4. Reglas deterministas (código, no IA)
+## 4. Reglas deterministas (código, nunca la IA)
 
-**Límite vigente** de un miembro en una categoría:
-- Se usa `member_limits` si hay un override para esa persona.
-- Si no, se usa `categories.monthly_limit_cents`.
+### 4.1 Saldo de una asignación
 
-**Consumido** de un miembro, una categoría y un mes:
-- Suma de `approved_cents` de autorizaciones **no revocadas** (pendientes, pagando, inciertas o pagadas) con ese `member_id`, `category_key` y `period`.
-- No cuentan las revocadas ni los pagos `failed`.
+- **Consumido** = suma de `approved_cents` de autorizaciones **no revocadas** (pendientes, pagando, inciertas o pagadas) de esa asignación. No cuentan las revocadas ni los pagos `failed`.
+- **Disponible** = `max(amount_cents − consumido, 0)`.
+- A qué asignación va un ticket: la de la categoría que leyó el agente, si existe; si no, la asignación sin categoría de esa persona. Si no hay ninguna, `needs_review` con "No tenés presupuesto asignado para esto".
 
-**Disponible** = `max(límite − consumido, 0)`.
+### 4.2 Pago automático
 
-Al evaluar una solicitud con importe `I`, categoría `C` y período `P`:
+Reemplaza la condición `amount_cents ≤ getAutoPayLimitCents` de `autoAuthorize` (`lib/workflow.ts`). Se paga solo **si y solo si se cumple todo**:
 
-| Caso | Recomendación | Propuesta de pago |
-|---|---|---|
-| `I ≤ disponible` | la que corresponda (approve, needs_info, etc.) | `I` |
-| `0 < disponible < I` | **`partial`** (nueva) | `disponible`. Excedente `I − disponible` solo como excepción. |
-| `disponible = 0` | **`over_limit`** (nueva) | nada dentro del límite. Todo solo como excepción. |
+1. `status = analyzed` y `recommendation = approve` (sin alertas).
+2. Ningún humano intervino en la solicitud (`humanIntervened`, igual que hoy).
+3. Pasa `hardLimitError` (política, fechas dentro del presupuesto, presupuesto total).
+4. El presupuesto está `open` y la fecha del ticket está entre `starts_on` y `ends_on`.
+5. `importe ≤ disponible` de la asignación.
+6. `importe ≤ autopay_max_per_receipt_cents` del presupuesto.
+7. Si `autopay_requires_qr`: `qr_status = valid` (§4.3).
+8. Entra en el tope de 24 h del agente.
 
-Prioridades:
-- `reject` (fuera de política) y `flag_review` (duplicado o instrucciones sospechosas) siguen teniendo prioridad sobre `partial` y `over_limit`.
-- `needs_info` también tiene prioridad, porque sin categoría o importe no se puede calcular el límite.
+Si falla cualquiera, no se paga nada solo, queda en el `audit_log` cuál falló y la solicitud va al owner. La IA no recibe ni calcula saldos.
 
-Al **autorizar**, el organizador elige una de estas opciones:
-1. **Pagar dentro del límite:** `approved = min(I, disponible)`.
-2. **Pagar el total como excepción:** `approved = I`, `exception_cents = I − disponible` y motivo obligatorio. La excepción **sí consume** límite, porque es gasto real del mes; el disponible puede quedar en 0.
-3. **Rechazar.**
+### 4.3 QR de ARCA
 
-Validación y binding:
-- Todo se revalida dentro de `BEGIN IMMEDIATE`: límite, presupuesto total y tope por comprobante.
-- El binding de la autorización incluye `approved_cents`, `recipient`, token, red, `request_id`, `file_sha256`, `member_id`, `category_key` y `period`.
+- Se lee el QR de la imagen (URL `https://www.afip.gob.ar/fe/qr/?p=<base64 JSON>`) y se decodifica el JSON: `cuit`, `tipoCmp`, `ptoVta`, `nroCmp`, `importe`, `fecha`, `codAut` (CAE).
+- `valid` si el importe y la fecha del QR coinciden con los que leyó el agente. Si no coinciden: `mismatch`. Sin QR: `missing`. Ilegible: `unreadable`.
+- Duplicado por `(cuit, tipoCmp, ptoVta, nroCmp)` → `flag_review`, aunque el archivo sea distinto.
+- **Límite, a decir sin exagerar:** esto prueba que el QR es coherente, no que la factura exista en ARCA. La constatación contra el web service de ARCA (requiere certificado) queda fuera de alcance.
+- Leer QR requiere una librería de decodificación: fijar una versión publicada hace más de 2 semanas (regla del `PLAN.md`).
+
+### 4.4 Decisión del owner
+
+Cuando la solicitud llega al owner, la caja de autorización muestra: importe, asignación, consumido, disponible, máximo por ticket y el motivo por el que no se pagó sola. Opciones:
+
+| Opción | Cuándo aparece | Se paga | Registro |
+|---|---|---|---|
+| **Pagar** | importe ≤ disponible | importe | `mode = full` |
+| **Pagar hasta el saldo** | 0 < disponible < importe | disponible | `mode = up_to_balance`; el resto no se puede volver a presentar |
+| **Pagar todo como excepción** | importe > disponible | importe | `mode = exception`, `exception_cents = importe − disponible`, **motivo obligatorio** |
+| **Rechazar** | siempre | nada | motivo opcional |
+
+La excepción **sí consume** saldo; el disponible queda en 0, nunca negativo.
+
+### 4.5 Validación, binding y concurrencia
+
+- Todo se revalida dentro de la transacción con bloqueo (hoy `BEGIN IMMEDIATE`; en Postgres, `SELECT … FOR UPDATE` sobre la asignación).
+- El binding incluye `approved_cents`, `recipient`, token, red, `request_id`, `file_sha256`, `member_id`, `assignment_id` y `mode`.
 - Si cambia cualquiera de esos valores, incluida la wallet del miembro, la autorización se revoca (igual que hoy).
-
-Cambios de política o límites:
-- Generan una nueva `policy_version` y quedan en el `audit_log`.
-- **No revocan** autorizaciones ya dadas: se respetan las decisiones tomadas.
-- Las solicitudes todavía no autorizadas se re-evalúan con los valores nuevos, y la UI muestra "re-evaluada con la política v{n}".
-
-Una solicitud pagada parcialmente queda `reimbursed`. La UI muestra "Reembolsado $ X de $ Y", y el excedente no pagado no se puede volver a presentar.
+- **Bajar** una asignación no revoca autorizaciones ya dadas; las solicitudes no autorizadas se re-evalúan y la UI muestra "re-evaluada".
 
 ## 5. Agente (IA)
 
-No cambia su rol.
-- Recibe la lista de categorías activas **con sus descripciones**, y el `enum` del schema se arma dinámicamente con esas claves más `otra` e `indeterminada`.
-- **No** recibe ni calcula límites ni saldos.
-- La explicación final combina el texto del agente con las reglas deterministas. Por ejemplo: "Te quedan $ 500 de $ 2.000 en transporte este mes: se propone reembolsar $ 500".
+No cambia su rol: lee el ticket, clasifica y explica.
+- Recibe las categorías activas con sus descripciones; el `enum` del schema se arma con esas claves más `otra` e `indeterminada`.
+- **No** recibe ni calcula saldos, límites ni el resultado del QR.
+- La explicación final combina su texto con las reglas: "Factura B válida de Panadería X. Te quedan $ 38.000 de $ 80.000 para catering."
 
 ## 6. Interfaz
 
-- **Login:** elegir persona y su passcode personal.
 - **Colaborador:**
-  - **"Mis límites"** arriba de todo: por categoría, límite, usado y disponible del mes, con barra.
-  - "Presentar gasto": ya no pide wallet; muestra "Se paga a tu wallet 0x…".
+  - **"Mis presupuestos"** arriba de todo: por presupuesto y categoría, asignado, usado y disponible, con barra, y "Pago automático hasta $ X por ticket".
+  - "Presentar gasto": elige el presupuesto (por defecto, el abierto), no pide wallet: "Se paga a tu wallet 0x…". La vista previa del agente dice antes de enviar si se va a pagar solo y, si no, por qué.
   - "Mis solicitudes": solo las propias.
 - **Organizador:**
-  - **"Equipo":** miembros (alta, baja, wallet, passcode), categorías con descripción y límite mensual, overrides por persona, y tabla de uso del mes por persona y categoría.
-  - **"Revisar gasto":** la caja de autorización muestra límite, usado, disponible, la propuesta (pago completo o parcial) y el botón de excepción con motivo.
-  - **"Resumen":** presupuesto total y wallet del agente, como hoy.
+  - **"Presupuestos":** crear y cerrar, fechas, máximo por ticket, exigir QR. Dentro, las asignaciones por persona y categoría, con su uso.
+  - **"Equipo":** miembros, wallet y categorías.
+  - **"Revisar gasto":** la caja de §4.4.
+  - **"Resumen":** presupuesto total, wallet del agente y tope de 24 h, como hoy.
 
 ## 7. Tests obligatorios
 
-1. Límite efectivo: override > categoría, y el override aplica solo a esa persona.
-2. Consumido por mes: un comprobante de septiembre no consume el límite de octubre, y viceversa.
-3. Las tres ramas: completo, `partial` y `over_limit`.
-4. Autorizar parcial paga `disponible` y el binding queda con `approved_cents = disponible`.
-5. Excepción sin motivo → rechazada. Con motivo → `approved = I` y el disponible queda en 0.
-6. Concurrencia: dos autorizaciones simultáneas del mismo miembro y categoría no superan el límite sin excepción.
-7. Cambiar la wallet del miembro con una autorización pendiente → se revoca.
-8. Cambiar límites no revoca autorizaciones dadas y re-evalúa las pendientes.
-9. Un colaborador no ve ni accede a solicitudes ni comprobantes de otro (página y ruta del archivo).
-10. Antigüedad: comprobante de hace 61 días → `reject`.
-11. Siguen pasando todos los tests existentes de doble pago, reconciliación y presupuesto.
+1. Saldo: consumido suma autorizaciones no revocadas y no cuenta revocadas ni `failed`.
+2. Asignación con categoría tiene prioridad sobre la asignación sin categoría.
+3. Pago automático: pasa con todo OK, y falla por separado con cada una de las 8 condiciones de §4.2 (con su entrada en el `audit_log`).
+4. Ticket mayor al máximo por ticket pero dentro del saldo → va al owner.
+5. Ticket mayor al saldo → nunca se paga parcial solo.
+6. "Pagar hasta el saldo" paga `disponible` y el binding queda con `approved_cents = disponible`.
+7. Excepción sin motivo → rechazada. Con motivo → `approved = importe` y el disponible queda en 0.
+8. Concurrencia: dos pagos automáticos simultáneos de la misma asignación no superan el saldo.
+9. QR: `valid`, `mismatch`, `missing`, `unreadable`, y duplicado por número de comprobante con otro archivo.
+10. Presupuesto cerrado o ticket fuera de fechas → no se paga solo.
+11. Cambiar la wallet con una autorización pendiente → se revoca.
+12. Un colaborador no ve ni accede a solicitudes, comprobantes ni asignaciones de otro.
+13. Siguen pasando los tests existentes de doble pago, reconciliación, tope de 24 h e intervención humana.
 
 ## 8. Demo
 
-- **Equipo:** Ana y Bruno (colaboradores) y Organizador.
-- **Categorías:**
-  - Transporte: $ 2.000 por mes.
-  - Materiales: $ 1.500 por mes.
-- **Override:** Ana en transporte, $ 3.000.
-- **Presupuesto total:** 5.000 wARS.
+- **Presupuesto:** "Meetup 25/10", pago automático hasta $ 50.000 por ticket, exige QR.
+- **Asignaciones:** Juan $ 80.000 (catering), Sofi $ 30.000 (sin categoría).
 
 Guion:
-1. Bruno, remís de $ 1.500 → **aprobar**, dentro del límite. Le quedan $ 500.
-2. Bruno, ticket ambiguo → **pide aclaración**.
-3. Bruno sube de nuevo el ticket del remís → **duplicado**.
-4. Bruno, otro remís de $ 1.200 (comprobante nuevo `04-excede.png`) → **parcial**: se propone $ 500 y $ 700 quedan como excepción.
-5. Ana ve su propio saldo y no ve las solicitudes de Bruno.
+1. Juan, ticket con QR de $ 42.000 → **se paga solo**. Le quedan $ 38.000.
+2. Juan sube otra foto del mismo comprobante → **duplicado por número de ARCA**.
+3. Sofi, ticket de $ 45.000 con QR → **supera su saldo**: va al owner, que elige "pagar hasta el saldo" ($ 30.000).
+4. Juan, ticket sin QR de $ 10.000 → **va al owner** porque el presupuesto exige QR.
+5. Sofi ve su saldo y no ve las solicitudes de Juan.
+
+Los tickets de demo necesitan QR de ARCA válidos (generados con datos ficticios) para los casos 1–3.
 
 ## 9. Fuera de alcance
 
-- Emisión de tarjetas.
-- Pre-aprobación de gastos antes de hacerlos.
+- Tarjetas, adelantos y pago directo al proveedor.
+- Presupuestos recurrentes (mensuales automáticos).
+- Modo "pagá y avisame" por encima del máximo por ticket.
+- Constatación del comprobante contra el web service de ARCA.
+- Varias monedas o activos de pago (USDC/USDT, "pagado fuera de la cadena").
+- Rendición exportable para sponsors.
+- Fondos en la Safe del organizador con módulo de allowance.
 - Varios niveles de aprobación.
-- Límites por comercio.
-- Otras monedas.
-- Integración contable.
-- Pago automático sin aprobación.
