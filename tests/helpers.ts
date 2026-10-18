@@ -15,7 +15,8 @@ import type { Session } from "../lib/types.ts";
 
 export const ORG: Session = { role: "organizer", issuedAt: Date.now() };
 export const COLLAB: Session = { role: "collaborator", issuedAt: Date.now() };
-export const RECIPIENT = "0x1111111111111111111111111111111111111111";
+// Direcciones de ejemplo del estándar EIP-55. Los tests nunca pagan en una red real (cadena falsa).
+export const RECIPIENT = "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed";
 
 export function aiOut(over: Partial<Omit<AiOutput, "extracted">> & { extracted?: Partial<AiOutput["extracted"]> } = {}): AiOutput {
   const { extracted, ...rest } = over;
@@ -43,7 +44,8 @@ export function aiOut(over: Partial<Omit<AiOutput, "extracted">> & { extracted?:
 
 /** Analizador falso: devuelve lo que diga `pick` según la descripción. */
 export function scriptedAnalyzer(pick: (description: string) => AiOutput): Analyzer {
-  return async (input) => ({ ok: true, output: pick(input.description), model: "test", provider: "test", fake: true });
+  // fake: false → se comporta como un análisis con IA real (si no, en mainnet el pago se bloquea).
+  return async (input) => ({ ok: true, output: pick(input.description), model: "test", provider: "test", fake: false });
 }
 
 export function tmpDir(): string {

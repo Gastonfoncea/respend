@@ -8,7 +8,8 @@ import { assertRole, actorName } from "./auth.ts";
 import { ALLOWED_MIME, MAX_RECEIPT_BYTES } from "./config.ts";
 import { sha256Hex, findDuplicates } from "./duplicates.ts";
 import { getBudget } from "./budget.ts";
-import { evaluateChecks, isIsoDate, normalizeRecipient } from "./policy.ts";
+import { evaluateChecks, isIsoDate, normalizeRecipient, unsafeRecipientReason } from "./policy.ts";
+import type { PaymentMode } from "./config.ts";
 import { recommend, fieldsFromAi } from "./agent/recommend.ts";
 import { validateAiOutput, type AiOutput } from "./agent/prompt.ts";
 import type { Analyzer } from "./agent/analyze.ts";
@@ -22,6 +23,8 @@ export interface Ctx {
   db: DB;
   receipts: ReceiptStore;
   analyzer: Analyzer;
+  /** Modo de pago de la app. En mainnet el pago automático no corre sobre análisis de prueba. */
+  paymentMode?: PaymentMode;
 }
 
 async function mustGet(q: Queryable, id: number): Promise<RequestRow> {
@@ -101,6 +104,8 @@ export async function setCollaboratorProfile(
   if (!name) throw new WorkflowError("Escribí tu nombre (entre 2 y 60 caracteres).");
   const wallet = normalizeRecipient(input.wallet);
   if (!wallet) throw new WorkflowError("Esa no es una dirección válida (0x… de 40 caracteres hex).");
+  const unsafe = unsafeRecipientReason(wallet);
+  if (unsafe) throw new WorkflowError(unsafe);
   return tx(ctx.db, async (q) => {
     const before = await repo.getCollaboratorProfile(q);
     if (before?.name !== name || before?.wallet !== wallet) {
@@ -127,6 +132,8 @@ export async function submitExpense(ctx: Ctx, session: Session | null, input: Su
   if (description.length > 1000) throw new WorkflowError("La descripción es demasiado larga (máx. 1000 caracteres).");
   const recipient = normalizeRecipient(input.recipient);
   if (!recipient) throw new WorkflowError("La wallet de destino no es una dirección válida (0x… de 40 caracteres hex).");
+  const unsafe = unsafeRecipientReason(recipient);
+  if (unsafe) throw new WorkflowError(unsafe);
   // Si el colaborador configuró su wallet de cobro, el destinatario tiene que ser esa: no se acepta otra.
   const profile = await repo.getCollaboratorProfile(ctx.db);
   const profileWallet = profile?.wallet ?? null;
@@ -477,6 +484,16 @@ export async function autoAuthorize(ctx: Ctx, requestId: number, nowMs = Date.no
     // Si un humano ya intervino (pidió aclaración, corrigió datos o hubo una autorización antes),
     // la decisión es suya: el agente no paga solo.
     if (await humanIntervened(q, r)) return null;
+    // Un análisis de prueba (sin IA) nunca mueve plata real.
+    if (ctx.paymentMode === "mainnet" && r.ai_fake) {
+      await repo.audit(q, r.id, "agente", "auto_pay_blocked", { reason: "fake_ai_in_mainnet" });
+      return null;
+    }
+    const unsafe = unsafeRecipientReason(r.recipient);
+    if (unsafe) {
+      await repo.audit(q, r.id, "agente", "auto_pay_blocked", { reason: "unsafe_recipient", detail: unsafe });
+      return null;
+    }
     const limit = await repo.getAutoPayLimitCents(q);
     if (limit <= 0 || r.amount_cents == null || r.amount_cents > limit) return null;
     const policy = await repo.getPolicy(q);

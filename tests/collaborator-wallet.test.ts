@@ -5,7 +5,7 @@ import { analyzeRequest, authorize, setCollaboratorProfile, submitExpense, Workf
 import * as repo from "../lib/repo.ts";
 import { makeCtx, COLLAB, ORG, RECIPIENT, tinyPng, type TestCtx } from "./helpers.ts";
 
-const OTHER = "0x2222222222222222222222222222222222222222";
+const OTHER = "0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359";
 const submit = (ctx: TestCtx, recipient: string, seed = 1) => submitExpense(ctx, COLLAB, { description: "remís", recipient, file: { bytes: tinyPng(seed), mime: "image/png" } });
 
 test("solo el colaborador define su perfil de cobro; el organizador no puede", async () => {

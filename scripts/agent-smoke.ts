@@ -27,7 +27,8 @@ const db = await openPglite(); // en memoria: no toca data/ ni Supabase
 await repo.upsertEvent(db, DEMO_POLICY);
 const ctx: Ctx = { db, receipts: createFsReceiptStore(path.join(dir, "receipts")), analyzer: fake ? createFakeAnalyzer() : createRealAnalyzer(cfg.ai) };
 const COLLAB: Session = { role: "collaborator", issuedAt: Date.now() };
-const recipient = cfg.demoCollaboratorAddress ?? "0x1111111111111111111111111111111111111111";
+// Sin pagos: la dirección solo se guarda en la base en memoria (ejemplo del estándar EIP-55).
+const recipient = cfg.demoCollaboratorAddress ?? "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed";
 
 console.log(`Proveedor: ${fake ? "fake (sin IA)" : cfg.ai.provider} · modelo: ${fake ? "fake-analyzer" : cfg.ai.model} · base: ${fake ? "-" : cfg.ai.baseUrl}\n`);
 

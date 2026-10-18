@@ -75,7 +75,7 @@ export function analyzer(): Analyzer {
 }
 
 export async function ctx(): Promise<Ctx> {
-  return { db: await db(), receipts: receipts(), analyzer: analyzer() };
+  return { db: await db(), receipts: receipts(), analyzer: analyzer(), paymentMode: config().paymentMode };
 }
 
 export function chain(): ChainClient {
@@ -85,7 +85,7 @@ export function chain(): ChainClient {
 export async function payTool(): Promise<PayTool> {
   const cfg = config();
   if (cfg.paymentMode === "mainnet") {
-    return createPayTool({ db: await db(), mode: "mainnet", chain: chain(), account: getAgentAccount() });
+    return createPayTool({ db: await db(), mode: "mainnet", chain: chain(), account: getAgentAccount(), aiMode: cfg.aiMode });
   }
   return createPayTool({ db: await db(), mode: "simulated", account: null });
 }
