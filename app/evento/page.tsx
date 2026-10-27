@@ -5,6 +5,7 @@ import AutoRefresh from "../components/AutoRefresh.tsx";
 import * as server from "@/lib/server.ts";
 import * as repo from "@/lib/repo.ts";
 import * as wf from "@/lib/workflow.ts";
+import * as budgets from "@/lib/budgets.ts";
 import { getBudget } from "@/lib/budget.ts";
 import { centsToWei } from "@/lib/money.ts";
 import { getAgentAddress } from "@/lib/chain/signer.ts";
@@ -74,9 +75,10 @@ export default async function EventoPage({ searchParams }: { searchParams: Promi
 
   async function OrganizerHome() {
     const budget = await getBudget(db);
-    const limitCents = await repo.getAutoPayLimitCents(db);
+    // Para el resumen: el mayor máximo por ticket entre los presupuestos abiertos y su tope de 24 h.
+    const limitCents = Math.max(0, ...(await budgets.listBudgets(db)).filter((b) => b.status === "open").map((b) => b.autopay_max_per_receipt_cents));
     const day = await repo.autoAuthorizedSince(db, new Date(Date.now() - 24 * 3600 * 1000).toISOString());
-    const digest = agentDigest(requests, { ...day, limitCents, capCents: (await repo.getAutoPayDailyCap(db)).cents });
+    const digest = agentDigest(requests, { ...day, limitCents, capCents: (await repo.dailyCapFor(db, limitCents)).cents });
     const autoIds = await repo.autoAuthorizedRequestIds(db);
     const live = budget.committedCents - budget.paidCents;
     const wallet = await walletInfo(getAgentAddress());
@@ -171,6 +173,11 @@ export default async function EventoPage({ searchParams }: { searchParams: Promi
 
   async function CollaboratorHome() {
     const collabAuto = await repo.autoAuthorizedRequestIds(db);
+    // Mis presupuestos: por presupuesto abierto y categoría, asignado, usado y disponible.
+    const open = await budgets.openBudgetsOfMember(db, session.memberId);
+    const mine = (await budgets.assignmentsOfMember(db, session.memberId)).filter((a) => open.some((b) => b.id === a.budget_id));
+    const balances = await Promise.all(mine.map((a) => budgets.balanceOf(db, a)));
+    const cats = new Map((await budgets.listCategories(db)).map((c) => [c.key, c.name]));
     const known = requests.filter((r) => r.amount_cents != null);
     const paid = known.filter((r) => r.status === "reimbursed").reduce((s, r) => s + r.amount_cents!, 0);
     const owed = known.filter((r) => r.status !== "reimbursed" && r.status !== "rejected").reduce((s, r) => s + r.amount_cents!, 0);
@@ -190,6 +197,36 @@ export default async function EventoPage({ searchParams }: { searchParams: Promi
             </>
           )}
         </section>
+        {open.length > 0 && (
+          <section style={{ marginTop: 28 }}>
+            <SectionLabel>Mis presupuestos</SectionLabel>
+            <div className="stack gap-16">
+              {open.map((b) => (
+                <div key={b.id} className="panel stack gap-8">
+                  <div className="between">
+                    <b>{b.name}</b>
+                    <span className="mono small dim">
+                      {b.autopay_max_per_receipt_cents > 0 ? `Pago automático hasta ${shortArs(b.autopay_max_per_receipt_cents)} por ticket` : "Lo aprueba el organizador"}
+                    </span>
+                  </div>
+                  {balances
+                    .filter((x) => x.assignment.budget_id === b.id)
+                    .map((x) => (
+                      <div key={x.assignment.id} className="stack gap-4">
+                        <div className="between small">
+                          <span>{x.assignment.category_key ? (cats.get(x.assignment.category_key) ?? x.assignment.category_key) : "Cualquier categoría"}</span>
+                          <span className="mono">
+                            Te quedan <b>{shortArs(x.availableCents)}</b> de {shortArs(x.assignment.amount_cents)}
+                          </span>
+                        </div>
+                        <Ticks total={x.assignment.amount_cents} segments={[{ cents: x.consumedCents, kind: "live" }]} count={40} />
+                      </div>
+                    ))}
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
         {requests.length === 0 ? (
           <div className="empty">
             <h2 className="display h2">Tu primer gasto</h2>

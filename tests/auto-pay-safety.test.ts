@@ -15,7 +15,7 @@ import {
 import { maybeAutoPay } from "../lib/autopay.ts";
 import { createPayTool } from "../lib/chain/payTool.ts";
 import * as repo from "../lib/repo.ts";
-import { aiOut, makeCtx, scriptedAnalyzer, COLLAB, ORG, RECIPIENT, tinyPng, type TestCtx } from "./helpers.ts";
+import { aiOut, makeCtx, scriptedAnalyzer, setAutoPayMax, COLLAB, ORG, RECIPIENT, tinyPng, type TestCtx } from "./helpers.ts";
 
 /** Cada descripción "<monto> <comercio>" produce un ticket distinto (para que no sean duplicados entre sí). */
 async function ctxTickets() {
@@ -36,10 +36,10 @@ const simulated = (ctx: TestCtx) => createPayTool({ db: ctx.db, mode: "simulated
 
 test("si el organizador pidió aclaración, la respuesta del colaborador vuelve a él: no se paga sola", async () => {
   const ctx = await ctxTickets();
-  await repo.setAutoPayLimitCents(ctx.db, 0); // apagado al llegar: el organizador lo revisa a mano
+  await setAutoPayMax(ctx.db, 0); // apagado al llegar: el organizador lo revisa a mano
   const id = await analyzed(ctx, "100.00 a");
   await requestClarification(ctx, ORG, id, "¿Quién viajó y desde dónde?");
-  await repo.setAutoPayLimitCents(ctx.db, 10000); // después se enciende el automático
+  await setAutoPayMax(ctx.db, 10000); // después se enciende el automático
   await respondClarification(ctx, COLLAB, id, "Yo, desde casa al venue");
   await analyzeRequest(ctx, id);
   assert.equal((await repo.getRequest(ctx.db, id))!.recommendation, "approve");
@@ -50,23 +50,23 @@ test("si el organizador pidió aclaración, la respuesta del colaborador vuelve 
 
 test("si el organizador corrigió los datos, no se paga solo", async () => {
   const ctx = await ctxTickets();
-  await repo.setAutoPayLimitCents(ctx.db, 0);
+  await setAutoPayMax(ctx.db, 0);
   const id = await analyzed(ctx, "150.00 b");
   await correctFields(ctx, ORG, id, { date: "2026-10-15", merchant: "Remis b", concept: "viaje", amount: "100.00", currency: "ARS", category: "transporte" });
-  await repo.setAutoPayLimitCents(ctx.db, 10000);
+  await setAutoPayMax(ctx.db, 10000);
   assert.equal(await autoAuthorize(ctx, id), null);
 });
 
 test("tope de 24 h por defecto: 3 veces el límite. El 4.º gasto de $ 100 espera al organizador", async () => {
   const ctx = await ctxTickets();
-  assert.deepEqual(await repo.getAutoPayDailyCap(ctx.db), { cents: 30000, custom: false });
+  assert.deepEqual(await repo.dailyCapFor(ctx.db, 10000), { cents: 30000, custom: false });
   const ids = [];
   for (const m of ["c", "d", "e", "f"]) ids.push(await analyzed(ctx, `100.00 ${m}`));
   const results = [];
   for (const id of ids) results.push((await maybeAutoPay(ctx, id, simulated(ctx)))?.status ?? "al organizador");
   assert.deepEqual(results, ["confirmed", "confirmed", "confirmed", "al organizador"]);
   assert.equal((await repo.getRequest(ctx.db, ids[3]))!.status, "analyzed");
-  assert.ok((await repo.listAudit(ctx.db, ids[3])).some((a) => a.action === "auto_pay_daily_cap_reached"));
+  assert.ok((await repo.listAudit(ctx.db, ids[3])).some((a) => a.action === "auto_pay_skipped" && a.detail?.includes("daily_cap")));
 });
 
 test("pasadas 24 h, el tope se libera", async () => {
@@ -94,13 +94,13 @@ test("el organizador fija el tope diario (o vuelve al automático); el colaborad
   await assert.rejects(() => setAutoPayDailyCap(ctx, COLLAB, 0), (e: unknown) => e instanceof AuthError && e.code === "forbidden");
   await assert.rejects(() => setAutoPayDailyCap(ctx, ORG, -1), WorkflowError);
   await setAutoPayDailyCap(ctx, ORG, 15000);
-  assert.deepEqual(await repo.getAutoPayDailyCap(ctx.db), { cents: 15000, custom: true });
+  assert.deepEqual(await repo.dailyCapFor(ctx.db, 10000), { cents: 15000, custom: true });
   const a = await analyzed(ctx, "100.00 o");
   const b = await analyzed(ctx, "100.00 p");
   assert.ok(await autoAuthorize(ctx, a));
   assert.equal(await autoAuthorize(ctx, b), null);
   await setAutoPayDailyCap(ctx, ORG, null);
-  assert.deepEqual(await repo.getAutoPayDailyCap(ctx.db), { cents: 30000, custom: false });
+  assert.deepEqual(await repo.dailyCapFor(ctx.db, 10000), { cents: 30000, custom: false });
   const [log] = await ctx.db.query<{ n: number }>("SELECT COUNT(*)::int AS n FROM audit_log WHERE action = 'auto_pay_daily_cap_updated'");
   assert.equal(log.n, 2);
 });

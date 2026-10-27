@@ -1,11 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { evaluateChecks, checkOf, isArs } from "../lib/policy.ts";
-import { DEMO_POLICY } from "../lib/demo.ts";
+import { DEMO_EVAL_POLICY } from "./helpers.ts";
 import type { ReceiptFields } from "../lib/types.ts";
 import { RECIPIENT } from "./helpers.ts";
 
-const policy = { ...DEMO_POLICY, version: 1 };
+const policy = DEMO_EVAL_POLICY;
 const base: ReceiptFields = {
   date: "2026-10-15",
   merchant: "X",

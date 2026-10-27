@@ -2,7 +2,8 @@
 import type { ClarificationRow, Policy } from "../types.ts";
 import { formatArs } from "../money.ts";
 
-export type AiCategory = "transporte" | "materiales" | "otra" | "indeterminada";
+/** Clave de una categoría activa (lib/budgets.ts) o "otra" / "indeterminada". */
+export type AiCategory = string;
 export type AiRecommendation = "approve" | "needs_info" | "reject";
 
 export interface AiOutput {
@@ -24,15 +25,27 @@ export interface AiOutput {
   evidence: string[];
 }
 
-const CATEGORIES: AiCategory[] = ["transporte", "materiales", "otra", "indeterminada"];
+/** Siempre disponibles, además de las categorías activas de la organización. */
+export const FIXED_CATEGORIES = ["otra", "indeterminada"] as const;
+const CATEGORY_KEY = /^[a-z_]{2,30}$/;
 const RECOMMENDATIONS: AiRecommendation[] = ["approve", "needs_info", "reject"];
 const LEGIBILITY = ["good", "partial", "poor"] as const;
 
 const nullableString = { type: ["string", "null"] };
 const stringArray = { type: "array", items: { type: "string" } };
 
-/** Schema para response_format json_schema strict (Chat Completions). */
-export const AI_OUTPUT_SCHEMA = {
+/** Schema para response_format json_schema strict (Chat Completions), con el enum de categorías de la política. */
+export function aiOutputSchema(categories: string[]) {
+  return {
+    ...AI_OUTPUT_SCHEMA,
+    schema: {
+      ...AI_OUTPUT_SCHEMA.schema,
+      properties: { ...AI_OUTPUT_SCHEMA.schema.properties, category: { type: "string", enum: [...categories, ...FIXED_CATEGORIES] } },
+    },
+  };
+}
+
+const AI_OUTPUT_SCHEMA = {
   name: "expense_review",
   strict: true,
   schema: {
@@ -66,7 +79,7 @@ export const AI_OUTPUT_SCHEMA = {
           legibility: { type: "string", enum: [...LEGIBILITY] },
         },
       },
-      category: { type: "string", enum: CATEGORIES },
+      category: { type: "string", enum: [] as string[] },
       category_reasoning: { type: "string" },
       missing_info: stringArray,
       clarification_questions: stringArray,
@@ -136,7 +149,10 @@ export function buildUserText(input: PromptInput): string {
     : "(sin aclaraciones)";
   return `POLÍTICA DEL EVENTO "${esc(p.name)}" (versión ${p.version}):
 - Fechas del evento: ${p.startDate} a ${p.endDate} (inclusive).
-- Categorías permitidas: ${p.categories.join(", ")}.
+- Categorías permitidas (clave: qué entra):
+${(p.categoryInfo.length ? p.categoryInfo : p.categories.map((key) => ({ key, name: key, description: "" })))
+  .map((c) => `  - ${c.key}: ${esc(c.name)}${c.description ? `. ${esc(c.description)}` : ""}`)
+  .join("\n")}
 - Moneda: ARS (pesos argentinos).
 - Tope por comprobante: ${formatArs(p.capPerReceiptCents)} (lo verifica el sistema).
 
@@ -192,7 +208,7 @@ export function validateAiOutput(raw: unknown): AiOutput {
   const legibility = ex.legibility;
   if (!LEGIBILITY.includes(legibility as (typeof LEGIBILITY)[number])) throw new AiValidationError("extracted.legibility");
 
-  if (!CATEGORIES.includes(o.category as AiCategory)) throw new AiValidationError("category inválida");
+  if (typeof o.category !== "string" || !CATEGORY_KEY.test(o.category)) throw new AiValidationError("category inválida");
   if (!RECOMMENDATIONS.includes(o.recommendation as AiRecommendation)) throw new AiValidationError("recommendation inválida");
   if (!isStr(o.category_reasoning)) throw new AiValidationError("category_reasoning");
   if (!isStr(o.explanation)) throw new AiValidationError("explanation");

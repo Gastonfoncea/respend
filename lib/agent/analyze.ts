@@ -5,7 +5,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import type { AiConfig } from "../config.ts";
 import type { ClarificationRow, Policy } from "../types.ts";
-import { AI_OUTPUT_SCHEMA, SYSTEM_PROMPT, buildUserText, validateAiOutput, type AiOutput } from "./prompt.ts";
+import { aiOutputSchema, FIXED_CATEGORIES, SYSTEM_PROMPT, buildUserText, validateAiOutput, type AiOutput } from "./prompt.ts";
 
 export interface AnalyzeInput {
   image: Uint8Array;
@@ -50,7 +50,7 @@ export function createRealAnalyzer(ai: AiConfig, fetchImpl: FetchLike = fetch): 
           ],
         },
       ],
-      response_format: { type: "json_schema", json_schema: AI_OUTPUT_SCHEMA },
+      response_format: { type: "json_schema", json_schema: aiOutputSchema(input.policy.categories) },
       max_completion_tokens: 4000,
     };
 
@@ -85,6 +85,8 @@ export function createRealAnalyzer(ai: AiConfig, fetchImpl: FetchLike = fetch): 
         if (msg?.refusal) throw new Error(`El modelo se negó: ${msg.refusal.slice(0, 200)}`);
         if (!msg?.content) throw new Error("Respuesta vacía");
         const output = validateAiOutput(JSON.parse(msg.content));
+        // Una categoría que no es de la política (no debería pasar con el schema estricto) cuenta como indeterminada.
+        if (![...input.policy.categories, ...FIXED_CATEGORIES].includes(output.category)) output.category = "indeterminada";
         return { ok: true, output, ...base, model: json.model ?? ai.model };
       } catch (err) {
         lastError = (err as Error).message;

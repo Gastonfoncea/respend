@@ -12,10 +12,10 @@ test("migraciones: una base en disco se reabre sin re-aplicarlas y conserva los 
   const dir = path.join(tmpDir(), "pglite");
   const a = await openPglite(dir);
   await repo.upsertEvent(a, DEMO_POLICY);
-  await repo.setAutoPayLimitCents(a, 5000);
+  await repo.setAutoPayDailyCapCents(a, 5000);
   await a.close();
   const b = await openPglite(dir);
-  assert.equal(await repo.getAutoPayLimitCents(b), 5000);
+  assert.equal(await repo.getCustomDailyCapCents(b), 5000);
   assert.equal((await repo.getPolicy(b)).version, 1);
   await b.close();
 });
@@ -80,11 +80,11 @@ test("tx(): si algo falla adentro, no queda nada escrito", async () => {
   await repo.upsertEvent(db, DEMO_POLICY);
   await assert.rejects(
     db.tx(async (q) => {
-      await repo.setAutoPayLimitCents(q, 1);
+      await repo.setAutoPayDailyCapCents(q, 1);
       throw new Error("boom");
     }),
     /boom/,
   );
-  assert.equal(await repo.getAutoPayLimitCents(db), 10000);
+  assert.equal(await repo.getCustomDailyCapCents(db), null);
   await db.close();
 });

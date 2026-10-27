@@ -1,17 +1,25 @@
 // Política de la demo (PLAN.md §10).
-import type { Policy } from "./types.ts";
+import type { GeneralPolicy } from "./types.ts";
 
-export const DEMO_POLICY: Omit<Policy, "version"> = {
+/** Política general de la demo: tope por ticket y presupuesto total (saldo de la wallet del agente). */
+export const DEMO_POLICY: Omit<GeneralPolicy, "version"> = {
   name: "Meetup Stable Agents BA",
-  startDate: "2026-10-10",
-  endDate: "2026-10-18",
-  categories: ["transporte", "materiales"],
   capPerReceiptCents: 200000,
   budgetCents: 500000,
 };
 
-/** Límite de pago automático por defecto (si el organizador no configuró otro): 100 wARS, inclusive. */
-export const DEFAULT_AUTO_PAY_LIMIT_CENTS = 10000;
+/** Presupuesto de la demo: el evento con sus fechas, con pago automático hasta $ 100 por ticket. */
+export const DEMO_BUDGET = {
+  name: "Meetup Stable Agents BA",
+  startsOn: "2026-10-10",
+  endsOn: "2026-10-18",
+  autopayMaxCents: 10000,
+};
+
+export const DEMO_CATEGORIES = [
+  { key: "transporte", name: "Transporte", description: "Remises, taxis, colectivos y viajes para el evento.", active: true },
+  { key: "materiales", name: "Materiales", description: "Insumos para el evento: librería, impresiones, ferretería, señalética.", active: true },
+];
 
 export const DEMO_DESCRIPTIONS: Record<string, string> = {
   "01-valido.png": "Remís para llevar el proyector y los banners al venue del meetup",

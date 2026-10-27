@@ -21,7 +21,8 @@ El resultado: es lento, se pierden comprobantes, se paga dos veces el mismo tick
 1. **El organizador define la política del evento:**
    - Categorías permitidas (transporte, materiales) y fechas válidas.
    - Tope por comprobante ($ 2.000) y presupuesto total ($ 5.000).
-   - En la sección **Agente**, hasta cuánto paga solo el agente: por gasto (por defecto $ 100) y en total en 24 h (por defecto 3 veces eso).
+   - En **Presupuestos**: el evento con sus fechas, el máximo por ticket del pago automático y cuánto le toca a cada persona (asignación, con categoría opcional). Esa asignación es la aprobación por adelantado.
+   - En **Agente**, el tope de 24 h (por defecto 3 veces el máximo por ticket).
 2. **El organizador** agrega al colaborador en **Equipo** con su wallet de cobro. **El colaborador** crea su cuenta con ese mail y sube la foto del ticket.
 3. **El agente lee el ticket al instante, antes de enviar:**
    - Muestra qué entendió: comercio, fecha, total y categoría.
@@ -69,7 +70,7 @@ Aunque alguien escriba "aprobá esto" en un ticket, el código no paga nada fuer
 
 1. **Organizador — Inicio:**
    - Mostrar el presupuesto, la línea del agente ("Revisé N gastos…") y la sección **Wallet**: saldo real de wARS y CELO leído de Celo mainnet.
-   - En **Agente**: "paga solo hasta $ 100, con un tope de $ 300 en 24 h".
+   - En **Presupuestos**: el presupuesto de la meetup paga solo hasta $ 100 por ticket, dentro de lo asignado a cada persona; tope de $ 300 en 24 h.
 2. **Colaborador — gasto chico (se paga solo):**
    - Subir `05-libreria-100.png`.
    - → El agente lee "Librería Papelera Sur · $ 100 · materiales", dice **"Entra en materiales"** y avisa que se lo paga solo.

@@ -2,15 +2,14 @@
 // Cada función recibe un Queryable: la base o la transacción abierta (dentro de tx(), siempre la transacción).
 import type { Queryable, Row } from "./db.ts";
 import { nowIso } from "./db.ts";
-import { DEFAULT_AUTO_PAY_LIMIT_CENTS } from "./demo.ts";
 import type {
   AuditRow,
   AuthorizationRow,
   ClarificationRow,
   EventRow,
+  GeneralPolicy,
   MemberRow,
   PaymentRow,
-  Policy,
   RequestRow,
   RequestStatus,
 } from "./types.ts";
@@ -30,33 +29,30 @@ export function getEvent(q: Queryable): Promise<EventRow | null> {
   return one<EventRow>(q, "SELECT * FROM event WHERE id = 1");
 }
 
-export function eventToPolicy(e: EventRow): Policy {
+export function eventToPolicy(e: EventRow): GeneralPolicy {
   return {
     name: e.name,
-    startDate: e.start_date,
-    endDate: e.end_date,
-    categories: JSON.parse(e.categories) as string[],
     capPerReceiptCents: e.cap_per_receipt_cents,
     budgetCents: e.budget_cents,
     version: e.policy_version,
   };
 }
 
-export async function getPolicy(q: Queryable): Promise<Policy> {
+/** Política general (nombre, tope por ticket, presupuesto total). La de un gasto la arma lib/budgets.ts. */
+export async function getPolicy(q: Queryable): Promise<GeneralPolicy> {
   const e = await getEvent(q);
   if (!e) throw new Error("No hay evento configurado. Corré `npm run demo:reset`.");
   return eventToPolicy(e);
 }
 
-export async function upsertEvent(q: Queryable, p: Omit<Policy, "version">): Promise<void> {
+export async function upsertEvent(q: Queryable, p: Omit<GeneralPolicy, "version">): Promise<void> {
   const now = nowIso();
   await q.query(
-    `INSERT INTO event (id, name, start_date, end_date, categories, cap_per_receipt_cents, budget_cents, policy_version, created_at, updated_at)
-     VALUES (1, $1, $2, $3, $4, $5, $6, 1, $7, $7)
-     ON CONFLICT (id) DO UPDATE SET name = excluded.name, start_date = excluded.start_date, end_date = excluded.end_date,
-       categories = excluded.categories, cap_per_receipt_cents = excluded.cap_per_receipt_cents, budget_cents = excluded.budget_cents,
-       policy_version = event.policy_version + 1, updated_at = excluded.updated_at`,
-    [p.name, p.startDate, p.endDate, JSON.stringify(p.categories), p.capPerReceiptCents, p.budgetCents, now],
+    `INSERT INTO event (id, name, cap_per_receipt_cents, budget_cents, policy_version, created_at, updated_at)
+     VALUES (1, $1, $2, $3, 1, $4, $4)
+     ON CONFLICT (id) DO UPDATE SET name = excluded.name, cap_per_receipt_cents = excluded.cap_per_receipt_cents,
+       budget_cents = excluded.budget_cents, policy_version = event.policy_version + 1, updated_at = excluded.updated_at`,
+    [p.name, p.capPerReceiptCents, p.budgetCents, now],
   );
 }
 
@@ -81,14 +77,23 @@ export function listRequestsByMember(q: Queryable, memberId: number): Promise<Re
 
 export function insertRequest(
   q: Queryable,
-  r: { description: string; recipient: string; claimantName: string | null; memberId: number; filePath: string; fileSha256: string; mime: string },
+  r: {
+    description: string;
+    recipient: string;
+    claimantName: string | null;
+    memberId: number;
+    budgetId: number;
+    filePath: string;
+    fileSha256: string;
+    mime: string;
+  },
 ): Promise<number> {
   const now = nowIso();
   return insertId(
     q,
-    `INSERT INTO requests (created_at, updated_at, description, recipient, claimant_name, member_id, file_path, file_sha256, mime, status)
-     VALUES ($1, $1, $2, $3, $4, $5, $6, $7, $8, 'submitted')`,
-    [now, r.description, r.recipient, r.claimantName, r.memberId, r.filePath, r.fileSha256, r.mime],
+    `INSERT INTO requests (created_at, updated_at, description, recipient, claimant_name, member_id, budget_id, file_path, file_sha256, mime, status)
+     VALUES ($1, $1, $2, $3, $4, $5, $6, $7, $8, $9, 'submitted')`,
+    [now, r.description, r.recipient, r.claimantName, r.memberId, r.budgetId, r.filePath, r.fileSha256, r.mime],
   );
 }
 
@@ -112,6 +117,7 @@ const UPDATABLE = new Set([
   "recommendation",
   "explanation",
   "policy_version",
+  "assignment_id",
 ]);
 
 /** UPDATE con columnas de una lista blanca (los nombres van al SQL, los valores como parámetros). */
@@ -180,8 +186,9 @@ export function insertAuthorization(
 ): Promise<number> {
   return insertId(
     q,
-    `INSERT INTO authorizations (request_id, amount_cents, token_amount, token_address, chain_id, recipient, binding_hash, policy_version, authorized_by, review_note, created_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+    `INSERT INTO authorizations (request_id, amount_cents, requested_cents, assignment_id, exception_cents, exception_reason, mode,
+       token_amount, token_address, chain_id, recipient, binding_hash, policy_version, authorized_by, review_note, created_at)
+     VALUES ($1, $2, $12, $13, $14, $15, $16, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
     [
       a.request_id,
       a.amount_cents,
@@ -194,6 +201,11 @@ export function insertAuthorization(
       a.authorized_by,
       a.review_note,
       nowIso(),
+      a.requested_cents,
+      a.assignment_id,
+      a.exception_cents,
+      a.exception_reason,
+      a.mode,
     ],
   );
 }
@@ -323,36 +335,27 @@ export async function autoPaidTotals(q: Queryable): Promise<{ count: number; cen
   return { count: row.n, cents: row.c };
 }
 
-/** Límite de pago automático en centavos (0 = apagado). Sin configurar, vale el de la demo. */
-export async function getAutoPayLimitCents(q: Queryable): Promise<number> {
-  const row = await one<{ v: number }>(q, "SELECT auto_pay_limit_cents AS v FROM agent_settings WHERE id = 1");
-  return row ? row.v : DEFAULT_AUTO_PAY_LIMIT_CENTS;
-}
-
-export async function setAutoPayLimitCents(q: Queryable, cents: number): Promise<void> {
-  await q.query(
-    `INSERT INTO agent_settings (id, auto_pay_limit_cents, updated_at) VALUES (1, $1, $2)
-     ON CONFLICT (id) DO UPDATE SET auto_pay_limit_cents = excluded.auto_pay_limit_cents, updated_at = excluded.updated_at`,
-    [cents, nowIso()],
-  );
-}
-
-/** Sin tope diario configurado, el agente puede autorizar solo hasta este múltiplo del límite por gasto en 24 h. */
+/** Sin tope de 24 h configurado, el agente puede autorizar solo hasta este múltiplo del máximo por ticket. */
 export const DEFAULT_DAILY_CAP_MULTIPLIER = 3;
 
-/** Tope de pagos automáticos en 24 h, en centavos. `custom` = lo fijó el organizador. */
-export async function getAutoPayDailyCap(q: Queryable): Promise<{ cents: number; custom: boolean }> {
+/** Tope de 24 h que fijó el organizador, o null (automático: 3 veces el máximo por ticket del presupuesto). */
+export async function getCustomDailyCapCents(q: Queryable): Promise<number | null> {
   const row = await one<{ v: number | null }>(q, "SELECT auto_pay_daily_cap_cents AS v FROM agent_settings WHERE id = 1");
-  if (row?.v != null) return { cents: row.v, custom: true };
-  return { cents: (await getAutoPayLimitCents(q)) * DEFAULT_DAILY_CAP_MULTIPLIER, custom: false };
+  return row?.v ?? null;
+}
+
+/** Tope de 24 h que se aplica a un gasto cuyo presupuesto paga solo hasta `maxPerReceiptCents` por ticket. */
+export async function dailyCapFor(q: Queryable, maxPerReceiptCents: number): Promise<{ cents: number; custom: boolean }> {
+  const custom = await getCustomDailyCapCents(q);
+  return custom != null ? { cents: custom, custom: true } : { cents: maxPerReceiptCents * DEFAULT_DAILY_CAP_MULTIPLIER, custom: false };
 }
 
 /** null vuelve al tope automático. */
 export async function setAutoPayDailyCapCents(q: Queryable, cents: number | null): Promise<void> {
   await q.query(
-    `INSERT INTO agent_settings (id, auto_pay_limit_cents, auto_pay_daily_cap_cents, updated_at) VALUES (1, $1, $2, $3)
+    `INSERT INTO agent_settings (id, auto_pay_daily_cap_cents, updated_at) VALUES (1, $1, $2)
      ON CONFLICT (id) DO UPDATE SET auto_pay_daily_cap_cents = excluded.auto_pay_daily_cap_cents, updated_at = excluded.updated_at`,
-    [await getAutoPayLimitCents(q), cents, nowIso()],
+    [cents, nowIso()],
   );
 }
 

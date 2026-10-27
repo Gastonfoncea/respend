@@ -7,7 +7,8 @@ import fs from "node:fs";
 import { readConfig } from "../lib/config.ts";
 import { openPglite, openPostgres } from "../lib/db.ts";
 import * as repo from "../lib/repo.ts";
-import { DEMO_POLICY } from "../lib/demo.ts";
+import { DEMO_BUDGET, DEMO_CATEGORIES, DEMO_POLICY } from "../lib/demo.ts";
+import * as budgets from "../lib/budgets.ts";
 
 const cfg = readConfig();
 const force = process.argv.includes("--force");
@@ -26,12 +27,14 @@ try {
   }
   await db.tx(async (q) => {
     await q.query(
-      "TRUNCATE payments, authorizations, clarifications, audit_log, requests, event, agent_settings RESTART IDENTITY",
+      "TRUNCATE payments, authorizations, clarifications, audit_log, requests, assignments, budgets, event, agent_settings RESTART IDENTITY",
     );
     await repo.upsertEvent(q, DEMO_POLICY);
+    for (const c of DEMO_CATEGORIES) await budgets.upsertCategory(q, c);
+    await budgets.insertBudget(q, { ...DEMO_BUDGET, createdBy: null });
   });
   if (!cfg.supabaseUrl) fs.rmSync(cfg.receiptsDir, { recursive: true, force: true });
-  console.log(`Datos borrados en ${where}. Evento "${DEMO_POLICY.name}" creado con la política de demo. El equipo se conservó.`);
+  console.log(`Datos borrados en ${where}. Política, categorías y presupuesto "${DEMO_BUDGET.name}" de demo creados. El equipo se conservó; las asignaciones se cargan en Presupuestos.`);
 } finally {
   await db.close();
 }

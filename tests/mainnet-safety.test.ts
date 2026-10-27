@@ -51,7 +51,7 @@ test("pago automático: con análisis de prueba en mainnet no autoriza; en simul
   };
   const main = await mk("mainnet");
   assert.equal(await autoAuthorize(main.ctx, main.id), null);
-  assert.ok((await auditActions(main.ctx.db, main.id)).some((a) => a.startsWith("auto_pay_blocked") && a.includes("fake_ai_in_mainnet")));
+  assert.ok((await auditActions(main.ctx.db, main.id)).some((a) => a.startsWith("auto_pay_skipped") && a.includes("fake_ai_in_mainnet")));
   const sim = await mk("simulated");
   assert.ok(await autoAuthorize(sim.ctx, sim.id));
 });

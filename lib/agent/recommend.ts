@@ -68,6 +68,8 @@ export function recommend(input: RecommendInput): RecommendResult {
   const otherReview: string[] = [];
   if (failed("budget_available")) otherReview.push("no alcanza el presupuesto disponible");
   if (failed("recipient_valid")) otherReview.push("la wallet de destino no es válida");
+  if (failed("assignment_found")) otherReview.push("no tiene presupuesto asignado para esto");
+  if (failed("budget_window")) otherReview.push("el presupuesto está cerrado");
   if (ai && ai.recommendation === "reject" && fieldsSource === "ai") otherReview.push("el agente sugirió rechazar");
   if (otherReview.length) {
     return done("flag_review", `Requiere revisión del organizador: ${otherReview.join("; ")}.`);

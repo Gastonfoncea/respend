@@ -15,7 +15,8 @@ import { validateAiOutput, type AiOutput } from "./agent/prompt.ts";
 import type { Analyzer } from "./agent/analyze.ts";
 import { bindingFor, bindingHash } from "./binding.ts";
 import { parseArsToCents, assertCents, formatArs } from "./money.ts";
-import type { Check, Policy, ReceiptFields, RequestRow, RequestStatus, Session } from "./types.ts";
+import * as budgets from "./budgets.ts";
+import type { AssignmentBalance, AuthorizationMode, Check, GeneralPolicy, Policy, ReceiptFields, RequestRow, RequestStatus, Session } from "./types.ts";
 
 export class WorkflowError extends Error {}
 
@@ -56,20 +57,14 @@ export function sniffMime(bytes: Uint8Array): string | null {
   return null;
 }
 
-/** Categorías que entiende el schema del agente (lib/agent/prompt.ts). */
-export const KNOWN_CATEGORIES = ["transporte", "materiales"] as const;
-
 const EXT: Record<string, string> = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp" };
 
 // --- política ---
 
-export async function updatePolicy(ctx: Ctx, session: Session | null, p: Omit<Policy, "version">): Promise<void> {
+/** Política general: nombre, tope por ticket y presupuesto total. Las fechas y categorías van por presupuesto. */
+export async function updatePolicy(ctx: Ctx, session: Session | null, p: Omit<GeneralPolicy, "version">): Promise<void> {
   const s = assertRole(session, ["organizer"]);
-  if (!p.name.trim()) throw new WorkflowError("El evento necesita un nombre.");
-  if (!isIsoDate(p.startDate) || !isIsoDate(p.endDate) || p.startDate > p.endDate) throw new WorkflowError("Fechas inválidas.");
-  if (!p.categories.length) throw new WorkflowError("Tiene que haber al menos una categoría.");
-  const unknown = p.categories.filter((c) => !(KNOWN_CATEGORIES as readonly string[]).includes(c));
-  if (unknown.length) throw new WorkflowError(`Categorías no soportadas por el agente: ${unknown.join(", ")}.`);
+  if (!p.name.trim()) throw new WorkflowError("La organización necesita un nombre.");
   assertCents(p.capPerReceiptCents);
   assertCents(p.budgetCents);
   await tx(ctx.db, async (q) => {
@@ -103,6 +98,8 @@ export function visibleRequests(ctx: Ctx, session: Session): Promise<RequestRow[
 
 export interface SubmitInput {
   description: string;
+  /** Presupuesto al que se presenta. Si no viene, el abierto más reciente donde la persona tiene asignación. */
+  budgetId?: number | null;
   /** Opcional: si viene, tiene que ser la wallet del perfil. El destino sale siempre del perfil del miembro. */
   recipient?: string;
   file: { bytes: Uint8Array; mime: string };
@@ -125,6 +122,7 @@ export async function submitExpense(ctx: Ctx, session: Session | null, input: Su
   if (input.recipient !== undefined && normalizeRecipient(input.recipient) !== recipient) {
     throw new WorkflowError("La wallet de cobro tiene que ser la de tu perfil.");
   }
+  const budget = await pickBudget(ctx.db, member.id, input.budgetId ?? null);
   const { bytes } = input.file;
   if (!bytes.length) throw new WorkflowError("Falta la imagen del comprobante.");
   if (bytes.length > MAX_RECEIPT_BYTES) throw new WorkflowError("La imagen supera los 4 MB.");
@@ -140,10 +138,29 @@ export async function submitExpense(ctx: Ctx, session: Session | null, input: Su
 
   return tx(ctx.db, async (q) => {
     const claimantName = member.name;
-    const id = await repo.insertRequest(q, { description, recipient, claimantName, memberId: member.id, filePath: fileName, fileSha256: sha, mime: sniffed });
-    await repo.audit(q, id, actorName(s), "submitted", { file_sha256: sha, recipient, claimant_name: claimantName, member_id: member.id });
+    const id = await repo.insertRequest(q, {
+      description,
+      recipient,
+      claimantName,
+      memberId: member.id,
+      budgetId: budget.id,
+      filePath: fileName,
+      fileSha256: sha,
+      mime: sniffed,
+    });
+    await repo.audit(q, id, actorName(s), "submitted", { file_sha256: sha, recipient, claimant_name: claimantName, member_id: member.id, budget_id: budget.id });
     return id;
   });
+}
+
+/** El presupuesto elegido (tiene que estar abierto y la persona tener una asignación) o el abierto más reciente. */
+async function pickBudget(q: Queryable, memberId: number, budgetId: number | null) {
+  const open = await budgets.openBudgetsOfMember(q, memberId);
+  if (!open.length) throw new WorkflowError("No tenés presupuesto asignado. Pedile al organizador que te asigne uno.");
+  if (budgetId == null) return open[0];
+  const b = open.find((x) => x.id === budgetId);
+  if (!b) throw new WorkflowError("Ese presupuesto no está abierto o no tenés asignación en él.");
+  return b;
 }
 
 export function readReceipt(ctx: Ctx, r: RequestRow): Promise<Buffer> {
@@ -157,7 +174,7 @@ export function readReceipt(ctx: Ctx, r: RequestRow): Promise<Buffer> {
  * Tiene que correr dentro de tx().
  */
 async function reevaluate(q: Queryable, r: RequestRow, ai: AiOutput | null, fields: ReceiptFields, fieldsSource: "ai" | "organizer") {
-  const policy = await repo.getPolicy(q);
+  const policy = await budgets.policyFor(q, r.budget_id);
   const budget = await getBudget(q);
   const ownAuth = await repo.getActiveAuthorization(q, r.id);
   const duplicates = await findDuplicates(q, r.id, r.file_sha256, fields);
@@ -168,8 +185,33 @@ async function reevaluate(q: Queryable, r: RequestRow, ai: AiOutput | null, fiel
     availableForRequestCents: budget.availableCents + (ownAuth?.amount_cents ?? 0),
     duplicates,
   });
+  // Presupuesto de la persona: abierto, y una asignación para la categoría (o una sin categoría).
+  let assignmentId: number | null = null;
+  if (r.budget_id != null && r.member_id != null) {
+    const b = await budgets.getBudgetById(q, r.budget_id);
+    checks.push({
+      rule: "budget_window",
+      ok: b?.status === "open",
+      detail: b?.status === "open" ? `Presupuesto "${b.name}" abierto.` : `El presupuesto "${b?.name ?? r.budget_id}" está cerrado.`,
+    });
+    const known = fields.category != null && fields.category !== "indeterminada";
+    const a = known ? await budgets.resolveAssignment(q, r.member_id, r.budget_id, fields.category) : null;
+    assignmentId = a?.id ?? null;
+    checks.push(
+      !known
+        ? { rule: "assignment_found", ok: null, detail: "Sin categoría todavía, no se sabe a qué asignación va." }
+        : a
+          ? {
+              rule: "assignment_found",
+              ok: true,
+              detail: `Va a la asignación ${a.category_key ? `de ${a.category_key}` : "sin categoría"} (${formatArs(a.amount_cents)}).`,
+            }
+          : { rule: "assignment_found", ok: false, detail: "No tenés presupuesto asignado para esto." },
+    );
+  }
   const result = recommend({ ai, fields, checks, fieldsSource });
   await repo.updateRequest(q, r.id, {
+    assignment_id: assignmentId,
     receipt_date: fields.date,
     merchant: fields.merchant,
     concept: fields.concept,
@@ -193,7 +235,7 @@ async function reevaluate(q: Queryable, r: RequestRow, ai: AiOutput | null, fiel
 export async function analyzeRequest(ctx: Ctx, requestId: number): Promise<RequestRow> {
   const r = await mustGet(ctx.db, requestId);
   assertStatus(r, ["submitted"], "analizar");
-  const policy = await repo.getPolicy(ctx.db);
+  const policy = await budgets.policyFor(ctx.db, r.budget_id);
   const clarifications = await repo.listClarifications(ctx.db, requestId);
   const image = await readReceipt(ctx, r);
 
@@ -238,6 +280,24 @@ export async function analyzeRequest(ctx: Ctx, requestId: number): Promise<Reque
     });
   });
   return mustGet(ctx.db, requestId);
+}
+
+/**
+ * Vuelve a evaluar solicitudes analizadas y sin autorizar (por ejemplo, porque cambió una asignación).
+ * No llama a la IA: recalcula checks y recomendación con los campos vigentes. Tiene que correr dentro de tx().
+ */
+export async function reevaluateOpen(q: Queryable, requestIds: number[], actor: string, why: string): Promise<number[]> {
+  const done: number[] = [];
+  for (const id of requestIds) {
+    const r = await repo.getRequest(q, id);
+    if (!r || r.status !== "analyzed" || (await repo.getActiveAuthorization(q, id))) continue;
+    const source = r.fields_source === "organizer" ? "organizer" : "ai";
+    const before = r.recommendation;
+    const result = await reevaluate(q, r, aiOutputOf(r), currentFields(r), source);
+    await repo.audit(q, id, actor, "reevaluated", { why, before, after: result.recommendation });
+    done.push(id);
+  }
+  return done;
 }
 
 export function aiOutputOf(r: RequestRow): AiOutput | null {
@@ -348,17 +408,56 @@ export async function rejectRequest(ctx: Ctx, session: Session | null, requestId
 
 // --- autorizar ---
 
+export type OwnerDecision = "full" | "up_to_balance" | "exception";
+
 export interface AuthorizeInput {
   /** Checkbox "Verifiqué monto y destinatario". */
   verifiedAmountAndRecipient: boolean;
   /** Checkbox "Revisé las alertas" (obligatorio si la recomendación es flag_review o needs_info). */
   reviewedAlerts: boolean;
   reason: string;
+  /** Qué paga el owner (§4.3 de la spec). Por defecto, el importe completo. */
+  decision?: OwnerDecision;
+}
+
+/** Saldo de la asignación a la que va la solicitud (sin contar su propia autorización), o null si no hay. */
+export async function assignmentBalanceFor(q: Queryable, r: RequestRow): Promise<AssignmentBalance | null> {
+  if (r.assignment_id == null) return null;
+  const a = await budgets.getAssignment(q, r.assignment_id);
+  return a ? budgets.balanceOf(q, a, r.id) : null;
+}
+
+/** Qué opciones tiene el owner para esta solicitud y cuánto se pagaría con cada una. */
+export interface DecisionOptions {
+  amountCents: number;
+  /** null = gasto sin presupuesto asignado (de antes de los presupuestos): solo "full". */
+  balance: AssignmentBalance | null;
+  full: boolean;
+  upToBalance: number | null;
+  exception: number | null;
+}
+
+export function decisionOptions(amountCents: number, balance: AssignmentBalance | null, legacy: boolean): DecisionOptions {
+  if (legacy) return { amountCents, balance: null, full: true, upToBalance: null, exception: null };
+  const available = balance?.availableCents ?? 0;
+  return {
+    amountCents,
+    balance,
+    full: amountCents <= available,
+    upToBalance: available > 0 && available < amountCents ? available : null,
+    exception: amountCents > available ? amountCents - available : null,
+  };
+}
+
+/** Gastos de antes de los presupuestos: no tienen persona ni presupuesto y se autorizan como antes. */
+function isLegacy(r: RequestRow): boolean {
+  return r.member_id == null || r.budget_id == null;
 }
 
 export async function authorize(ctx: Ctx, session: Session | null, requestId: number, input: AuthorizeInput): Promise<number> {
   const s = assertRole(session, ["organizer"]);
   if (!input.verifiedAmountAndRecipient) throw new WorkflowError("Tildá \"Verifiqué monto y destinatario\".");
+  const decision = input.decision ?? "full";
   return tx(ctx.db, async (q) => {
     const r = await mustGet(q, requestId);
     assertStatus(r, ["analyzed", "needs_info", "payment_failed"], "autorizar");
@@ -371,10 +470,39 @@ export async function authorize(ctx: Ctx, session: Session | null, requestId: nu
         throw new WorkflowError("Hay alertas: tildá \"Revisé las alertas\" y escribí el motivo para autorizar igual.");
       }
     }
-    const policy = await repo.getPolicy(q);
-    const blocked = await hardLimitError(q, r, policy);
+    if (r.amount_cents == null) throw new WorkflowError("Falta el importe.");
+    const balance = await assignmentBalanceFor(q, r);
+    const opts = decisionOptions(r.amount_cents, balance, isLegacy(r));
+    let approved: number;
+    let exceptionCents = 0;
+    if (decision === "full") {
+      if (!opts.full) {
+        throw new WorkflowError(
+          balance
+            ? `El importe supera el saldo de la asignación (${formatArs(balance.availableCents)}): pagá hasta el saldo o como excepción.`
+            : "No tiene presupuesto asignado para esto: solo se puede pagar como excepción.",
+        );
+      }
+      approved = r.amount_cents;
+    } else if (decision === "up_to_balance") {
+      if (opts.upToBalance == null) throw new WorkflowError("\"Pagar hasta el saldo\" es para cuando queda saldo pero no alcanza.");
+      approved = opts.upToBalance;
+    } else {
+      if (opts.exception == null) throw new WorkflowError("No hace falta una excepción: el importe entra en el saldo.");
+      if (!reason) throw new WorkflowError("Para pagar como excepción, escribí el motivo.");
+      approved = r.amount_cents;
+      exceptionCents = opts.exception;
+    }
+    const policy = await budgets.policyFor(q, r.budget_id);
+    const blocked = await hardLimitError(q, r, policy, approved);
     if (blocked) throw new WorkflowError(blocked);
-    const { id, hash } = await insertAuthorization(q, r, policy, actorName(s), reason || null);
+    const { id, hash } = await insertAuthorization(q, r, policy, actorName(s), reason || null, {
+      approvedCents: approved,
+      assignmentId: r.assignment_id,
+      mode: decision,
+      exceptionCents,
+      exceptionReason: decision === "exception" ? reason : null,
+    });
     await repo.setStatus(q, r.id, "authorized");
     await repo.audit(q, r.id, actorName(s), "authorized", {
       authorization_id: id,
@@ -382,19 +510,32 @@ export async function authorize(ctx: Ctx, session: Session | null, requestId: nu
       recommendation: r.recommendation,
       reviewed_alerts: input.reviewedAlerts,
       reason: reason || null,
+      decision,
+      requested_cents: r.amount_cents,
+      approved_cents: approved,
+      exception_cents: exceptionCents,
+      available_cents: balance?.availableCents ?? null,
     });
     return id;
   });
 }
 
 /** Límites duros (no se pasan ni con motivo). Devuelve el motivo del bloqueo o null si se puede autorizar. */
-async function hardLimitError(q: Queryable, r: RequestRow, policy: Policy): Promise<string | null> {
+async function hardLimitError(q: Queryable, r: RequestRow, policy: Policy, approvedCents: number): Promise<string | null> {
   if (r.amount_cents == null) return "Falta el importe.";
-  if (r.amount_cents <= 0) return "El importe tiene que ser mayor a cero.";
+  if (r.amount_cents <= 0 || approvedCents <= 0) return "El importe tiene que ser mayor a cero.";
   if (r.amount_cents > policy.capPerReceiptCents) return "El importe supera el tope por comprobante.";
-  if (r.amount_cents > (await getBudget(q)).availableCents) return "No alcanza el presupuesto disponible.";
+  if (approvedCents > (await getBudget(q)).availableCents) return "No alcanza el presupuesto disponible.";
   if (!normalizeRecipient(r.recipient)) return "La wallet de destino no es válida.";
   return null;
+}
+
+interface ApprovalDetail {
+  approvedCents: number;
+  assignmentId: number | null;
+  mode: AuthorizationMode;
+  exceptionCents: number;
+  exceptionReason: string | null;
 }
 
 async function insertAuthorization(
@@ -403,12 +544,18 @@ async function insertAuthorization(
   policy: Policy,
   by: string,
   note: string | null,
+  a: ApprovalDetail,
 ): Promise<{ id: number; hash: string }> {
-  const b = bindingFor(r, policy.version);
+  const b = bindingFor(r, policy.version, { approvedCents: a.approvedCents, assignmentId: a.assignmentId, mode: a.mode });
   const hash = bindingHash(b);
   const id = await repo.insertAuthorization(q, {
     request_id: r.id,
     amount_cents: b.amount_cents,
+    requested_cents: b.requested_cents,
+    assignment_id: a.assignmentId,
+    exception_cents: a.exceptionCents,
+    exception_reason: a.exceptionReason,
+    mode: a.mode,
     token_amount: b.token_amount,
     token_address: b.token_address,
     chain_id: b.chain_id,
@@ -430,74 +577,104 @@ async function humanIntervened(q: Queryable, r: RequestRow): Promise<boolean> {
   return (await repo.listAuthorizations(q, r.id)).length > 0;
 }
 
-/** Tope de pagos automáticos en 24 h. null = automático (3 veces el límite por gasto). */
+/** Tope de pagos automáticos en 24 h. null = automático (3 veces el máximo por ticket del presupuesto). */
 export async function setAutoPayDailyCap(ctx: Ctx, session: Session | null, cents: number | null): Promise<void> {
   const s = assertRole(session, ["organizer"]);
   if (cents != null && (!Number.isSafeInteger(cents) || cents < 0)) throw new WorkflowError("El tope diario tiene que ser un monto válido, 0 o más.");
   await tx(ctx.db, async (q) => {
-    const before = await repo.getAutoPayDailyCap(q);
-    if (cents === (before.custom ? before.cents : null)) return;
+    const before = await repo.getCustomDailyCapCents(q);
+    if (cents === before) return;
     await repo.setAutoPayDailyCapCents(q, cents);
-    await repo.audit(q, null, actorName(s), "auto_pay_daily_cap_updated", { before_cents: before.custom ? before.cents : null, after_cents: cents });
+    await repo.audit(q, null, actorName(s), "auto_pay_daily_cap_updated", { before_cents: before, after_cents: cents });
   });
 }
 
-/** El organizador fija hasta cuánto (inclusive) el agente paga solo. 0 lo apaga. */
-export async function setAutoPayLimit(ctx: Ctx, session: Session | null, cents: number): Promise<void> {
-  const s = assertRole(session, ["organizer"]);
-  if (!Number.isSafeInteger(cents) || cents < 0) throw new WorkflowError("El límite tiene que ser un monto válido, 0 o más.");
-  const policy = await repo.getPolicy(ctx.db);
-  if (cents > policy.capPerReceiptCents) throw new WorkflowError("El límite automático no puede superar el tope por comprobante.");
-  await tx(ctx.db, async (q) => {
-    const before = await repo.getAutoPayLimitCents(q);
-    if (before === cents) return;
-    await repo.setAutoPayLimitCents(q, cents);
-    await repo.audit(q, null, actorName(s), "auto_pay_limit_updated", { before_cents: before, after_cents: cents });
-  });
-}
+/** Por qué un gasto no se paga solo (para el audit_log y la explicación). null = se paga solo. */
+export type AutoPaySkip =
+  | "not_approved"
+  | "human_intervened"
+  | "hard_limit"
+  | "budget_closed_or_out_of_dates"
+  | "no_assignment"
+  | "over_balance"
+  | "over_max_per_receipt"
+  | "daily_cap"
+  | "fake_ai_in_mainnet"
+  | "unsafe_recipient";
+
+export const AUTO_PAY_SKIP_TEXT: Record<AutoPaySkip, string> = {
+  not_approved: "tiene alertas o falta información",
+  human_intervened: "ya intervino un humano en la solicitud",
+  hard_limit: "no cumple un límite duro de la política",
+  budget_closed_or_out_of_dates: "el presupuesto está cerrado o el ticket es de otra fecha",
+  no_assignment: "no tiene presupuesto asignado para esto",
+  over_balance: "supera el saldo de la asignación",
+  over_max_per_receipt: "supera el máximo por ticket del pago automático",
+  daily_cap: "el agente llegó a su tope de 24 h",
+  fake_ai_in_mainnet: "el análisis es de prueba y la app paga en mainnet",
+  unsafe_recipient: "la wallet de destino no es segura",
+};
 
 /**
- * Autorización automática, sin intervención humana en el momento. La decide el código, nunca la IA:
- * solo si la recomendación es "approve" (todos los checks pasan, sin alertas ni duplicados), el monto
- * es menor o igual al límite que fijó el organizador y se cumplen los límites duros.
- * Devuelve el id de la autorización, o null si la solicitud tiene que ir al organizador.
+ * Autorización automática (§4.2 de la spec). La decide el código, nunca la IA. Se paga solo si y solo si:
+ * 1. analyzed + approve (sin alertas); 2. ningún humano intervino; 3. límites duros; 4. presupuesto abierto
+ * y ticket dentro de sus fechas; 5. importe ≤ disponible de la asignación; 6. importe ≤ máximo por ticket
+ * del presupuesto; 7. entra en el tope de 24 h. Si falla una, queda en el audit_log cuál y va al owner.
+ * Corre bajo el lock global de escritura: dos pagos automáticos de la misma asignación no leen el mismo saldo.
  */
 export async function autoAuthorize(ctx: Ctx, requestId: number, nowMs = Date.now()): Promise<number | null> {
   return tx(ctx.db, async (q) => {
     const r = await mustGet(q, requestId);
-    if (r.status !== "analyzed" || r.recommendation !== "approve") return null;
+    if (r.status !== "analyzed") return null;
     if (await repo.getActiveAuthorization(q, requestId)) return null;
-    // Si un humano ya intervino (pidió aclaración, corrigió datos o hubo una autorización antes),
-    // la decisión es suya: el agente no paga solo.
-    if (await humanIntervened(q, r)) return null;
-    // Un análisis de prueba (sin IA) nunca mueve plata real.
-    if (ctx.paymentMode === "mainnet" && r.ai_fake) {
-      await repo.audit(q, r.id, "agente", "auto_pay_blocked", { reason: "fake_ai_in_mainnet" });
+    const skip = async (reason: AutoPaySkip, detail: Record<string, unknown> = {}) => {
+      await repo.audit(q, r.id, "agente", "auto_pay_skipped", { reason, ...detail });
       return null;
-    }
+    };
+    // 1. Sin alertas.
+    if (r.recommendation !== "approve" || r.amount_cents == null) return skip("not_approved");
+    // 2. Si un humano ya intervino (pidió aclaración, corrigió datos o hubo una autorización antes), decide él.
+    if (await humanIntervened(q, r)) return skip("human_intervened");
+    // Barreras contra pagos accidentales: un análisis de prueba nunca mueve plata real; destinos seguros.
+    if (ctx.paymentMode === "mainnet" && r.ai_fake) return skip("fake_ai_in_mainnet");
     const unsafe = unsafeRecipientReason(r.recipient);
-    if (unsafe) {
-      await repo.audit(q, r.id, "agente", "auto_pay_blocked", { reason: "unsafe_recipient", detail: unsafe });
-      return null;
+    if (unsafe) return skip("unsafe_recipient", { detail: unsafe });
+    // 3. Límites duros.
+    const policy = await budgets.policyFor(q, r.budget_id);
+    const hard = await hardLimitError(q, r, policy, r.amount_cents);
+    if (hard) return skip("hard_limit", { detail: hard });
+    // 4. Presupuesto abierto y ticket dentro de sus fechas.
+    const budget = r.budget_id != null ? await budgets.getBudgetById(q, r.budget_id) : null;
+    if (!budget || budget.status !== "open" || !r.receipt_date || r.receipt_date < budget.starts_on || r.receipt_date > budget.ends_on) {
+      return skip("budget_closed_or_out_of_dates");
     }
-    const limit = await repo.getAutoPayLimitCents(q);
-    if (limit <= 0 || r.amount_cents == null || r.amount_cents > limit) return null;
-    const policy = await repo.getPolicy(q);
-    if (await hardLimitError(q, r, policy)) return null;
-    // Tope de 24 h: limita cuánto puede pagar solo el agente aunque lleguen muchos gastos chicos.
-    const cap = (await repo.getAutoPayDailyCap(q)).cents;
+    // 5. Saldo de la asignación.
+    const balance = await assignmentBalanceFor(q, r);
+    if (!balance) return skip("no_assignment");
+    if (r.amount_cents > balance.availableCents) return skip("over_balance", { amount_cents: r.amount_cents, available_cents: balance.availableCents });
+    // 6. Máximo por ticket del presupuesto (0 = sin pago automático).
+    const max = budget.autopay_max_per_receipt_cents;
+    if (max <= 0 || r.amount_cents > max) return skip("over_max_per_receipt", { amount_cents: r.amount_cents, max_cents: max });
+    // 7. Tope de 24 h: limita cuánto puede pagar solo el agente aunque lleguen muchos gastos chicos.
+    const cap = (await repo.dailyCapFor(q, max)).cents;
     const used = await repo.autoAuthorizedSinceCents(q, new Date(nowMs - 24 * 3600 * 1000).toISOString());
-    if (used + r.amount_cents > cap) {
-      await repo.audit(q, r.id, "agente", "auto_pay_daily_cap_reached", { used_cents: used, cap_cents: cap, amount_cents: r.amount_cents });
-      return null;
-    }
-    const { id, hash } = await insertAuthorization(q, r, policy, `${repo.AUTO_PAY_ACTOR} ≤ ${formatArs(limit)}`, null);
+    if (used + r.amount_cents > cap) return skip("daily_cap", { used_cents: used, cap_cents: cap, amount_cents: r.amount_cents });
+
+    const { id, hash } = await insertAuthorization(q, r, policy, `${repo.AUTO_PAY_ACTOR} ≤ ${formatArs(max)}`, null, {
+      approvedCents: r.amount_cents,
+      assignmentId: balance.assignment.id,
+      mode: "auto",
+      exceptionCents: 0,
+      exceptionReason: null,
+    });
     await repo.setStatus(q, r.id, "authorized");
     await repo.audit(q, r.id, "agente", "auto_authorized", {
       authorization_id: id,
       binding_hash: hash,
       amount_cents: r.amount_cents,
-      limit_cents: limit,
+      max_cents: max,
+      available_cents: balance.availableCents,
+      assignment_id: balance.assignment.id,
     });
     return id;
   });
@@ -524,6 +701,9 @@ export type PreviewResult =
       fake: boolean;
       /** Si al enviarlo el agente lo pagaría solo (estimación: la decisión real se toma al enviar). */
       autoPay: string | null;
+      budgetName: string;
+      /** Lo que le queda en la asignación a la que iría (null si no hay asignación). */
+      availableCents: number | null;
     }
   | { ok: false; error: string };
 
@@ -542,7 +722,12 @@ const PREVIEW_RULES: Check["rule"][] = [
  * El agente lee el ticket ANTES de que el colaborador lo envíe. No guarda nada (ni archivo ni solicitud):
  * es solo una ayuda para evitar rechazos. La evaluación que vale es la que corre al enviar.
  */
-export async function previewExpense(ctx: Ctx, session: Session | null, file: { bytes: Uint8Array }): Promise<PreviewResult> {
+export async function previewExpense(
+  ctx: Ctx,
+  session: Session | null,
+  file: { bytes: Uint8Array },
+  budgetId: number | null = null,
+): Promise<PreviewResult> {
   const s = assertRole(session, ["collaborator"]);
   const { bytes } = file;
   if (!bytes.length) throw new WorkflowError("Falta la imagen del comprobante.");
@@ -550,7 +735,8 @@ export async function previewExpense(ctx: Ctx, session: Session | null, file: { 
   const mime = sniffMime(bytes);
   if (!mime || !(ALLOWED_MIME as readonly string[]).includes(mime)) throw new WorkflowError("La imagen tiene que ser JPEG, PNG o WebP.");
 
-  const policy = await repo.getPolicy(ctx.db);
+  const budget = await pickBudget(ctx.db, s.memberId, budgetId);
+  const policy = await budgets.policyFor(ctx.db, budget.id);
   const sha = sha256Hex(bytes);
   const res = await ctx.analyzer({ image: Buffer.from(bytes), mime, fileSha256: sha, description: "", clarifications: [], policy });
   if (!res.ok) return { ok: false, error: res.error };
@@ -590,7 +776,7 @@ export async function previewExpense(ctx: Ctx, session: Session | null, file: { 
     headline = `Esto no parece ${policy.categories.join(" ni ")}: probablemente no se reembolse.`;
   } else if (failed("date_in_range")) {
     verdict = "outside";
-    headline = `La fecha del ticket está fuera del evento (${policy.startDate} a ${policy.endDate}).`;
+    headline = `La fecha del ticket está fuera de "${budget.name}" (${policy.startDate} a ${policy.endDate}).`;
   } else if (failed("amount_le_cap")) {
     verdict = "outside";
     headline = "El monto supera el tope por ticket.";
@@ -615,19 +801,28 @@ export async function previewExpense(ctx: Ctx, session: Session | null, file: { 
   const question =
     cat === "indeterminada" && ai.clarification_questions[0] ? ai.clarification_questions[0] : "¿Para qué fue este gasto?";
 
+  // Estimación de si se pagaría solo (la decisión real se toma al enviar, con las 7 condiciones).
   let autoPay: string | null = null;
-  const limit = await repo.getAutoPayLimitCents(ctx.db);
-  if (verdict === "fits" && limit > 0 && fields.amountCents != null) {
+  let balance: AssignmentBalance | null = null;
+  if (verdict === "fits" && fields.amountCents != null) {
+    const a = await budgets.resolveAssignment(ctx.db, s.memberId, budget.id, cat);
+    balance = a ? await budgets.balanceOf(ctx.db, a) : null;
+    const max = budget.autopay_max_per_receipt_cents;
     const used = await repo.autoAuthorizedSinceCents(ctx.db, new Date(Date.now() - 24 * 3600 * 1000).toISOString());
-    const cap = (await repo.getAutoPayDailyCap(ctx.db)).cents;
-    if (fields.amountCents > limit) autoPay = `Supera el pago automático (${formatArs(limit)}): lo aprueba el organizador.`;
+    const cap = (await repo.dailyCapFor(ctx.db, max)).cents;
+    if (!balance) autoPay = "No tenés presupuesto asignado para esto: lo decide el organizador.";
+    else if (fields.amountCents > balance.availableCents) autoPay = `Supera lo que te queda (${formatArs(balance.availableCents)}): lo decide el organizador.`;
+    else if (max <= 0) autoPay = "Este presupuesto no tiene pago automático: lo aprueba el organizador.";
+    else if (fields.amountCents > max) autoPay = `Supera el máximo por ticket del pago automático (${formatArs(max)}): lo aprueba el organizador.`;
     else if (used + fields.amountCents > cap) autoPay = "Hoy el agente ya llegó a su tope de pagos automáticos: lo aprueba el organizador.";
-    else autoPay = `Es de ${formatArs(limit)} o menos: si al enviarlo sigue sin alertas, el agente te lo paga solo.`;
+    else autoPay = `Entra en lo que te queda (${formatArs(balance.availableCents)}): si al enviarlo sigue sin alertas, el agente te lo paga solo.`;
   }
 
   return {
     ok: true,
     autoPay,
+    budgetName: budget.name,
+    availableCents: balance?.availableCents ?? null,
     fields,
     categoryReasoning: ai.category_reasoning,
     verdict,

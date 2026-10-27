@@ -9,7 +9,8 @@ import { createFsReceiptStore, createSupabaseReceiptStore, type ReceiptStore } f
 import { createLocalIdentity, createSupabaseIdentity, type IdentityProvider } from "./identity.ts";
 import type { AuthCtx } from "./members.ts";
 import * as repo from "./repo.ts";
-import { DEMO_POLICY } from "./demo.ts";
+import { DEMO_CATEGORIES, DEMO_POLICY } from "./demo.ts";
+import * as budgets from "./budgets.ts";
 import type { Ctx } from "./workflow.ts";
 
 interface Singletons {
@@ -37,10 +38,12 @@ async function openConfiguredDb(cfg: AppConfig): Promise<DB> {
     if (cfg.onVercel) throw new ConfigError("Falta DATABASE_URL: en Vercel la base tiene que ser Postgres (Supabase).");
     db = await openPglite(cfg.pgliteDir);
   }
-  // Primera vez: crear el evento de demo para que la app arranque usable.
-  if (!(await repo.getEvent(db))) {
+  // Primera vez: política general y categorías de la demo para que la app arranque usable.
+  // Los presupuestos los crea el organizador.
+  if (!(await repo.getEvent(db)) || !(await budgets.listCategories(db)).length) {
     await db.tx(async (q) => {
       if (!(await repo.getEvent(q))) await repo.upsertEvent(q, DEMO_POLICY);
+      if (!(await budgets.listCategories(q)).length) for (const c of DEMO_CATEGORIES) await budgets.upsertCategory(q, c);
     });
   }
   return db;

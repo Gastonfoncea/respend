@@ -9,7 +9,8 @@ import { createFsReceiptStore } from "../lib/receipts.ts";
 import { createLocalIdentity } from "../lib/identity.ts";
 import type { AuthCtx } from "../lib/members.ts";
 import * as repo from "../lib/repo.ts";
-import { DEMO_POLICY } from "../lib/demo.ts";
+import { DEMO_BUDGET, DEMO_CATEGORIES, DEMO_POLICY } from "../lib/demo.ts";
+import * as budgets from "../lib/budgets.ts";
 import type { Ctx } from "../lib/workflow.ts";
 import type { Analyzer } from "../lib/agent/analyze.ts";
 import type { AiOutput } from "../lib/agent/prompt.ts";
@@ -21,6 +22,8 @@ export const RECIPIENT = "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed";
 // La base modelo trae estos dos miembros (ids 1 y 2): un organizador y un colaborador con wallet RECIPIENT.
 export const ORG_ID = 1;
 export const COLLAB_ID = 2;
+/** El presupuesto de la demo (DEMO_BUDGET): 10 al 18/10/2026, pago automático hasta $ 100. */
+export const BUDGET_ID = 1;
 export const ORG: Session = { memberId: ORG_ID, role: "organizer", name: "Ana Org", issuedAt: Date.now() };
 export const COLLAB: Session = { memberId: COLLAB_ID, role: "collaborator", name: "Juan Colab", issuedAt: Date.now() };
 
@@ -73,11 +76,31 @@ function template(): Promise<PgliteDB> {
     await repo.upsertEvent(db, DEMO_POLICY);
     await repo.insertMember(db, { email: "ana@equipo.test", name: ORG.name, role: "organizer", wallet: null });
     await repo.insertMember(db, { email: "juan@equipo.test", name: COLLAB.name, role: "collaborator", wallet: RECIPIENT });
+    for (const c of DEMO_CATEGORIES) await budgets.upsertCategory(db, c);
+    await budgets.insertBudget(db, { ...DEMO_BUDGET, createdBy: ORG_ID });
+    // Asignación "sin categoría" del colaborador por todo el presupuesto total: los tests de antes siguen igual.
+    await budgets.upsertAssignment(db, { budgetId: BUDGET_ID, memberId: COLLAB_ID, categoryKey: null, amountCents: DEMO_POLICY.budgetCents, by: ORG_ID });
     return db;
   })());
 }
 
 export type TestCtx = AuthCtx & { dir: string };
+
+/** Cambia el máximo por ticket del pago automático del presupuesto de la demo (0 = apagado). */
+export async function setAutoPayMax(db: DB, cents: number): Promise<void> {
+  await db.query("UPDATE budgets SET autopay_max_per_receipt_cents = $1 WHERE id = $2", [cents, BUDGET_ID]);
+}
+
+/** Política de evaluación de la demo (la general + el presupuesto de la demo + sus categorías). */
+export const DEMO_EVAL_POLICY = {
+  ...DEMO_POLICY,
+  version: 1,
+  budgetId: BUDGET_ID,
+  startDate: DEMO_BUDGET.startsOn,
+  endDate: DEMO_BUDGET.endsOn,
+  categories: DEMO_CATEGORIES.map((c) => c.key),
+  categoryInfo: DEMO_CATEGORIES.map(({ key, name, description }) => ({ key, name, description })),
+};
 
 /** Contexto de test: Postgres en memoria (PGlite) con las migraciones de supabase/migrations y comprobantes en una carpeta temporal. */
 export async function makeCtx(analyzer: Analyzer = scriptedAnalyzer(() => aiOut()), dir = tmpDir()): Promise<TestCtx> {

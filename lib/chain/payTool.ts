@@ -91,7 +91,7 @@ export function createPayTool(deps: PayDeps): PayTool {
         return { blocked: new PaymentError(`${unsafe} No se paga.`) };
       }
       const policy = await repo.getPolicy(q);
-      const current = bindingHash(bindingFor(r, policy.version));
+      const current = bindingHash(bindingFor(r, policy.version, { approvedCents: auth.amount_cents, assignmentId: auth.assignment_id, mode: auth.mode }));
       if (current !== auth.binding_hash || auth.chain_id !== CHAIN_ID || getAddress(auth.token_address) !== WARS_ADDRESS) {
         await repo.revokeAuthorization(q, auth.id, "Los datos cambiaron después de autorizar.");
         await repo.setStatus(q, requestId, "analyzed");
