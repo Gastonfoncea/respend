@@ -75,7 +75,8 @@ export default async function SolicitudPage({
   if (!Number.isSafeInteger(id) || id <= 0) notFound();
   const db = await server.db();
   const cfg = server.config();
-  let r = await repo.getRequest(db, id);
+  // El colaborador solo ve lo suyo: lo ajeno responde "no encontrado", igual que lo inexistente.
+  let r = await wf.requestFor(await server.ctx(), session, id);
   if (!r) notFound();
 
   // Reconciliar al cargar si hay un pago mainnet vivo.

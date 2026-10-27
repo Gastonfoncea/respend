@@ -3,7 +3,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createPayTool, MainnetGuardError, PaymentError } from "../lib/chain/payTool.ts";
-import { analyzeRequest, authorize, autoAuthorize, setCollaboratorProfile, submitExpense, WorkflowError } from "../lib/workflow.ts";
+import { analyzeRequest, authorize, autoAuthorize, submitExpense } from "../lib/workflow.ts";
+import { addMember, updateMember } from "../lib/members.ts";
 import { unsafeRecipientReason } from "../lib/policy.ts";
 import * as repo from "../lib/repo.ts";
 import type { Analyzer } from "../lib/agent/analyze.ts";
@@ -68,11 +69,11 @@ test("destinos que nadie controla se rechazan", () => {
   assert.equal(unsafeRecipientReason(RECIPIENT), null);
 });
 
-test("perfil y presentación no aceptan una wallet de prueba", async () => {
+test("el equipo no acepta una wallet de prueba ni de quemado", async () => {
   const ctx = await makeCtx();
-  await assert.rejects(() => setCollaboratorProfile(ctx, COLLAB, { name: "Ana", wallet: "0x1111111111111111111111111111111111111111" }), WorkflowError);
+  await assert.rejects(() => updateMember(ctx, ORG, 2, { wallet: "0x1111111111111111111111111111111111111111" }), /prueba/);
   await assert.rejects(
-    () => submitExpense(ctx, COLLAB, { description: "x", recipient: "0x000000000000000000000000000000000000dEaD", file: { bytes: tinyPng(1), mime: "image/png" } }),
+    () => addMember(ctx, ORG, { email: "z@x.com", name: "Zoe", role: "collaborator", wallet: "0x000000000000000000000000000000000000dEaD" }),
     /quemado/,
   );
 });

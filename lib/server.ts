@@ -6,6 +6,8 @@ import { createRealChain, type ChainClient } from "./chain/clients.ts";
 import { createPayTool, type PayTool } from "./chain/payTool.ts";
 import { getAgentAccount } from "./chain/signer.ts";
 import { createFsReceiptStore, createSupabaseReceiptStore, type ReceiptStore } from "./receipts.ts";
+import { createLocalIdentity, createSupabaseIdentity, type IdentityProvider } from "./identity.ts";
+import type { AuthCtx } from "./members.ts";
 import * as repo from "./repo.ts";
 import { DEMO_POLICY } from "./demo.ts";
 import type { Ctx } from "./workflow.ts";
@@ -14,6 +16,7 @@ interface Singletons {
   db?: Promise<DB>;
   dbKey?: string;
   receipts?: ReceiptStore;
+  identity?: IdentityProvider;
   chain?: ChainClient;
 }
 
@@ -67,6 +70,23 @@ export function receipts(): ReceiptStore {
     S.receipts = createFsReceiptStore(cfg.receiptsDir);
   }
   return S.receipts;
+}
+
+/** Supabase Auth si hay Supabase configurado; si no, el proveedor local (solo desarrollo). */
+export async function identity(): Promise<IdentityProvider> {
+  if (S.identity) return S.identity;
+  const cfg = config();
+  if (cfg.supabaseUrl && cfg.supabaseSecretKey) {
+    S.identity = createSupabaseIdentity({ url: cfg.supabaseUrl, secretKey: cfg.supabaseSecretKey });
+  } else {
+    if (cfg.onVercel) throw new ConfigError("Faltan SUPABASE_URL y SUPABASE_SECRET_KEY: en Vercel las cuentas van a Supabase Auth.");
+    S.identity = createLocalIdentity(await db());
+  }
+  return S.identity;
+}
+
+export async function authCtx(): Promise<AuthCtx> {
+  return { ...(await ctx()), identity: await identity(), ownerEmail: config().ownerEmail };
 }
 
 export function analyzer(): Analyzer {

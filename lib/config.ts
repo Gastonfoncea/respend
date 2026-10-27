@@ -39,9 +39,9 @@ export interface AppConfig {
   paymentMode: PaymentMode;
   aiMode: AiMode;
   ai: AiConfig;
-  organizerPasscode: string | null;
-  collaboratorPasscode: string | null;
   sessionSecret: string | null;
+  /** Opcional: si está, solo ese mail puede crear la primera cuenta (la del organizador). */
+  ownerEmail: string | null;
   dataDir: string;
   /** Postgres (Supabase). Sin esto se usa PGlite local en `pgliteDir` (solo desarrollo). */
   databaseUrl: string | null;
@@ -113,9 +113,8 @@ export function readConfig(env: Env = process.env): AppConfig {
     paymentMode,
     aiMode,
     ai: readAiConfig(env),
-    organizerPasscode: nonEmpty(env.ORGANIZER_PASSCODE),
-    collaboratorPasscode: nonEmpty(env.COLLABORATOR_PASSCODE),
     sessionSecret: nonEmpty(env.SESSION_SECRET),
+    ownerEmail: nonEmpty(env.OWNER_EMAIL),
     dataDir,
     databaseUrl: nonEmpty(env.DATABASE_URL),
     databaseCaCert: nonEmpty(env.DATABASE_CA_CERT)?.replace(/\\n/g, "\n") ?? null,

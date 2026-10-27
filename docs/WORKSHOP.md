@@ -22,7 +22,7 @@ El resultado: es lento, se pierden comprobantes, se paga dos veces el mismo tick
    - Categorías permitidas (transporte, materiales) y fechas válidas.
    - Tope por comprobante ($ 2.000) y presupuesto total ($ 5.000).
    - En la sección **Agente**, hasta cuánto paga solo el agente: por gasto (por defecto $ 100) y en total en 24 h (por defecto 3 veces eso).
-2. **El colaborador** completa **Mi perfil** (nombre y wallet de cobro) y sube la foto del ticket.
+2. **El organizador** agrega al colaborador en **Equipo** con su wallet de cobro. **El colaborador** crea su cuenta con ese mail y sube la foto del ticket.
 3. **El agente lee el ticket al instante, antes de enviar:**
    - Muestra qué entendió: comercio, fecha, total y categoría.
    - Dice si entra en la política, si parece duplicado o si trae instrucciones escondidas.
@@ -64,7 +64,7 @@ Aunque alguien escriba "aprobá esto" en un ticket, el código no paga nada fuer
 **Antes de empezar:**
 - La app corre en Vercel (base y fotos en Supabase): se abre la URL desde el celular, sin túnel ni laptop prendida.
 - Sin internet o sin Vercel: `npm run build && npm start -- -p 3001` con PGlite local (sin `DATABASE_URL`) y, para el celular, `cloudflared tunnel --url http://localhost:3001`.
-- Los códigos de acceso están en `.env.local` (`ORGANIZER_PASSCODE` y `COLLABORATOR_PASSCODE`). No se publican.
+- Cada uno entra con su mail y contraseña. El organizador agrega a los colaboradores en **Equipo** (nombre, mail y wallet de cobro) y ellos crean su contraseña con "Crear cuenta".
 - Los tickets están en `demo/receipts/`.
 
 1. **Organizador — Inicio:**
@@ -99,7 +99,7 @@ Aunque alguien escriba "aprobá esto" en un ticket, el código no paga nada fuer
 - "Si el organizador interviene en un gasto, ese gasto ya no se paga solo".
 - "Los límites los aplica la **app**, no un contrato en la blockchain. Quien tenga la clave del agente podría mover esos fondos por fuera de la app; por eso la wallet tiene poco saldo".
 - "No valida que el ticket sea auténtico ni fiscalmente válido. Por eso existe el tope de 24 h".
-- "El nombre del colaborador es declarado: en el piloto entra con un código compartido".
+- "Cada persona entra con su cuenta; la wallet de cobro la fija el organizador y cada colaborador ve solo sus gastos".
 - "wARS no son pesos en el banco. En el piloto usamos una equivalencia nominal 1 ARS = 1 wARS, sin conversión".
 
 ## 8. Qué está probado

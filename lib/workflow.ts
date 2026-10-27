@@ -81,46 +81,30 @@ export async function updatePolicy(ctx: Ctx, session: Session | null, p: Omit<Po
   });
 }
 
-// --- wallet de cobro del colaborador ---
+// --- acceso a una solicitud ---
 
-/** Nombre visible del colaborador: sin caracteres de control, espacios colapsados, 2 a 60 caracteres. */
-export function normalizeClaimantName(raw: string): string | null {
-  const name = raw.replace(/[\u0000-\u001f\u007f]/g, "").replace(/\s+/g, " ").trim();
-  return name.length >= 2 && name.length <= 60 ? name : null;
+/** El organizador ve todo; el colaborador, solo lo que presentó él. */
+export function canSeeRequest(session: Session, r: RequestRow): boolean {
+  return session.role === "organizer" || (r.member_id != null && r.member_id === session.memberId);
 }
 
-/**
- * El colaborador define quién es (nombre declarado) y a qué wallet le pagan. Las solicitudes ya presentadas
- * conservan el nombre y la wallet que tenían (el organizador aprobó ese destinatario exacto);
- * lo nuevo aplica a los gastos que presente después.
- */
-export async function setCollaboratorProfile(
-  ctx: Ctx,
-  session: Session | null,
-  input: { name: string; wallet: string },
-): Promise<repo.CollaboratorProfile> {
-  const s = assertRole(session, ["collaborator"]);
-  const name = normalizeClaimantName(input.name);
-  if (!name) throw new WorkflowError("Escribí tu nombre (entre 2 y 60 caracteres).");
-  const wallet = normalizeRecipient(input.wallet);
-  if (!wallet) throw new WorkflowError("Esa no es una dirección válida (0x… de 40 caracteres hex).");
-  const unsafe = unsafeRecipientReason(wallet);
-  if (unsafe) throw new WorkflowError(unsafe);
-  return tx(ctx.db, async (q) => {
-    const before = await repo.getCollaboratorProfile(q);
-    if (before?.name !== name || before?.wallet !== wallet) {
-      await repo.setCollaboratorProfile(q, { name, wallet });
-      await repo.audit(q, null, actorName(s), "collaborator_profile_updated", { before, after: { name, wallet } });
-    }
-    return { name, wallet };
-  });
+/** Para páginas y rutas: la solicitud si existe y la sesión puede verla; si no, null (se responde "no encontrado"). */
+export async function requestFor(ctx: Ctx, session: Session, id: number): Promise<RequestRow | null> {
+  const r = await repo.getRequest(ctx.db, id);
+  return r && canSeeRequest(session, r) ? r : null;
+}
+
+/** Las solicitudes que esa sesión puede ver. */
+export function visibleRequests(ctx: Ctx, session: Session): Promise<RequestRow[]> {
+  return session.role === "organizer" ? repo.listRequests(ctx.db) : repo.listRequestsByMember(ctx.db, session.memberId);
 }
 
 // --- presentar ---
 
 export interface SubmitInput {
   description: string;
-  recipient: string;
+  /** Opcional: si viene, tiene que ser la wallet del perfil. El destino sale siempre del perfil del miembro. */
+  recipient?: string;
   file: { bytes: Uint8Array; mime: string };
 }
 
@@ -130,15 +114,16 @@ export async function submitExpense(ctx: Ctx, session: Session | null, input: Su
   const description = input.description.trim();
   if (!description) throw new WorkflowError("Escribí una descripción breve del gasto.");
   if (description.length > 1000) throw new WorkflowError("La descripción es demasiado larga (máx. 1000 caracteres).");
-  const recipient = normalizeRecipient(input.recipient);
-  if (!recipient) throw new WorkflowError("La wallet de destino no es una dirección válida (0x… de 40 caracteres hex).");
+  // El destino es siempre la wallet que el organizador fijó para esta persona.
+  const member = await repo.getMember(ctx.db, s.memberId);
+  if (!member?.active) throw new WorkflowError("Tu acceso está desactivado.");
+  if (!member.wallet) throw new WorkflowError("Todavía no tenés wallet de cobro. Pedile al organizador que la cargue en \"Equipo\".");
+  const recipient = normalizeRecipient(member.wallet);
+  if (!recipient) throw new WorkflowError("La wallet de tu perfil no es válida. Pedile al organizador que la corrija.");
   const unsafe = unsafeRecipientReason(recipient);
   if (unsafe) throw new WorkflowError(unsafe);
-  // Si el colaborador configuró su wallet de cobro, el destinatario tiene que ser esa: no se acepta otra.
-  const profile = await repo.getCollaboratorProfile(ctx.db);
-  const profileWallet = profile?.wallet ?? null;
-  if (profileWallet && profileWallet !== recipient) {
-    throw new WorkflowError("La wallet de cobro tiene que ser la de tu perfil. Cambiala desde \"Mi wallet\".");
+  if (input.recipient !== undefined && normalizeRecipient(input.recipient) !== recipient) {
+    throw new WorkflowError("La wallet de cobro tiene que ser la de tu perfil.");
   }
   const { bytes } = input.file;
   if (!bytes.length) throw new WorkflowError("Falta la imagen del comprobante.");
@@ -154,9 +139,9 @@ export async function submitExpense(ctx: Ctx, session: Session | null, input: Su
   await ctx.receipts.put(fileName, bytes, sniffed);
 
   return tx(ctx.db, async (q) => {
-    const claimantName = profile?.name ?? null;
-    const id = await repo.insertRequest(q, { description, recipient, claimantName, filePath: fileName, fileSha256: sha, mime: sniffed });
-    await repo.audit(q, id, actorName(s), "submitted", { file_sha256: sha, recipient, claimant_name: claimantName });
+    const claimantName = member.name;
+    const id = await repo.insertRequest(q, { description, recipient, claimantName, memberId: member.id, filePath: fileName, fileSha256: sha, mime: sniffed });
+    await repo.audit(q, id, actorName(s), "submitted", { file_sha256: sha, recipient, claimant_name: claimantName, member_id: member.id });
     return id;
   });
 }
@@ -273,6 +258,7 @@ export async function respondClarification(ctx: Ctx, session: Session | null, re
   if (msg.length > 1000) throw new WorkflowError("La respuesta es demasiado larga (máx. 1000 caracteres).");
   await tx(ctx.db, async (q) => {
     const r = await mustGet(q, requestId);
+    if (!canSeeRequest(s, r)) throw new WorkflowError(`No existe la solicitud #${requestId}`);
     assertStatus(r, ["needs_info"], "responder");
     await repo.addClarification(q, requestId, "collaborator", msg);
     await repo.setStatus(q, requestId, "submitted");
@@ -557,7 +543,7 @@ const PREVIEW_RULES: Check["rule"][] = [
  * es solo una ayuda para evitar rechazos. La evaluación que vale es la que corre al enviar.
  */
 export async function previewExpense(ctx: Ctx, session: Session | null, file: { bytes: Uint8Array }): Promise<PreviewResult> {
-  assertRole(session, ["collaborator"]);
+  const s = assertRole(session, ["collaborator"]);
   const { bytes } = file;
   if (!bytes.length) throw new WorkflowError("Falta la imagen del comprobante.");
   if (bytes.length > MAX_RECEIPT_BYTES) throw new WorkflowError("La imagen supera los 4 MB.");
@@ -582,15 +568,20 @@ export async function previewExpense(ctx: Ctx, session: Session | null, file: { 
   const checks = all.filter((c) => PREVIEW_RULES.includes(c.rule));
   const failed = (rule: Check["rule"]) => checks.find((c) => c.rule === rule)?.ok === false;
   const unknown = (rule: Check["rule"]) => checks.find((c) => c.rule === rule)?.ok == null;
-  const duplicateOf = [...new Set([...duplicates.file, ...duplicates.data])];
+  // Al colaborador solo se le muestran los números de sus propias solicitudes; las de otros, sin número.
+  const allDup = [...new Set([...duplicates.file, ...duplicates.data])];
+  const mine = new Set((await repo.listRequestsByMember(ctx.db, s.memberId)).map((r) => r.id));
+  const duplicateOf = allDup.filter((id) => mine.has(id));
   const suspicious = ai.suspicious_instructions;
   const cat = fields.category;
 
   let verdict: PreviewVerdict;
   let headline: string;
-  if (duplicateOf.length) {
+  if (allDup.length) {
     verdict = "review";
-    headline = `Parece el mismo ticket que ya presentaste (#${duplicateOf.join(", #")}).`;
+    headline = duplicateOf.length
+      ? `Parece el mismo ticket que ya presentaste (#${duplicateOf.join(", #")}).`
+      : "Parece un ticket que ya se presentó. El organizador lo va a revisar.";
   } else if (suspicious.length) {
     verdict = "review";
     headline = "El ticket trae texto que parece una instrucción. Lo ignoré, pero el organizador lo va a revisar.";

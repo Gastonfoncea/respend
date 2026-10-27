@@ -3,6 +3,7 @@ import Link from "next/link";
 import type { PaymentMode } from "@/lib/config.ts";
 import type { Role } from "@/lib/types.ts";
 import { logout } from "../actions/session.ts";
+import { getSession } from "@/lib/session.ts";
 import Icon from "./Icon.tsx";
 import NavLinks from "./NavLinks.tsx";
 import Sheet from "./Sheet.tsx";
@@ -63,7 +64,8 @@ export function EventHead({ eventName, mode, role }: { eventName: string; mode: 
   );
 }
 
-export function AccountSheet({ role, mode, eventName, variant }: { role: Role; mode: PaymentMode; eventName: string; variant: "icon" | "side" }) {
+export async function AccountSheet({ role, mode, eventName, variant }: { role: Role; mode: PaymentMode; eventName: string; variant: "icon" | "side" }) {
+  const name = (await getSession())?.name ?? null;
   return (
     <Sheet
       triggerClassName={variant === "icon" ? "icon-btn" : "side-link"}
@@ -74,13 +76,13 @@ export function AccountSheet({ role, mode, eventName, variant }: { role: Role; m
         ) : (
           <>
             <Icon name="user" size={18} />
-            <span>{ROLE_LABEL[role]}</span>
+            <span>{name ?? ROLE_LABEL[role]}</span>
           </>
         )
       }
     >
-      <p className="label">Entraste como</p>
-      <h2 className="display h1">{ROLE_LABEL[role]}</h2>
+      <p className="label">Entraste como {ROLE_LABEL[role].toLowerCase()}</p>
+      <h2 className="display h1">{name ?? ROLE_LABEL[role]}</h2>
       <Rows>
         <Row k="Evento">{eventName}</Row>
         <Row k="Modo" tone={mode === "mainnet" ? undefined : "amb"}>

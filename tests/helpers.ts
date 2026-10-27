@@ -6,6 +6,8 @@ import path from "node:path";
 import zlib from "node:zlib";
 import { openPglite, type DB, type PgliteDB } from "../lib/db.ts";
 import { createFsReceiptStore } from "../lib/receipts.ts";
+import { createLocalIdentity } from "../lib/identity.ts";
+import type { AuthCtx } from "../lib/members.ts";
 import * as repo from "../lib/repo.ts";
 import { DEMO_POLICY } from "../lib/demo.ts";
 import type { Ctx } from "../lib/workflow.ts";
@@ -13,10 +15,14 @@ import type { Analyzer } from "../lib/agent/analyze.ts";
 import type { AiOutput } from "../lib/agent/prompt.ts";
 import type { Session } from "../lib/types.ts";
 
-export const ORG: Session = { role: "organizer", issuedAt: Date.now() };
-export const COLLAB: Session = { role: "collaborator", issuedAt: Date.now() };
 // Direcciones de ejemplo del estándar EIP-55. Los tests nunca pagan en una red real (cadena falsa).
 export const RECIPIENT = "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed";
+
+// La base modelo trae estos dos miembros (ids 1 y 2): un organizador y un colaborador con wallet RECIPIENT.
+export const ORG_ID = 1;
+export const COLLAB_ID = 2;
+export const ORG: Session = { memberId: ORG_ID, role: "organizer", name: "Ana Org", issuedAt: Date.now() };
+export const COLLAB: Session = { memberId: COLLAB_ID, role: "collaborator", name: "Juan Colab", issuedAt: Date.now() };
 
 export function aiOut(over: Partial<Omit<AiOutput, "extracted">> & { extracted?: Partial<AiOutput["extracted"]> } = {}): AiOutput {
   const { extracted, ...rest } = over;
@@ -65,17 +71,19 @@ function template(): Promise<PgliteDB> {
   return (templateDb ??= (async () => {
     const db = await openPglite();
     await repo.upsertEvent(db, DEMO_POLICY);
+    await repo.insertMember(db, { email: "ana@equipo.test", name: ORG.name, role: "organizer", wallet: null });
+    await repo.insertMember(db, { email: "juan@equipo.test", name: COLLAB.name, role: "collaborator", wallet: RECIPIENT });
     return db;
   })());
 }
 
-export type TestCtx = Ctx & { dir: string };
+export type TestCtx = AuthCtx & { dir: string };
 
 /** Contexto de test: Postgres en memoria (PGlite) con las migraciones de supabase/migrations y comprobantes en una carpeta temporal. */
 export async function makeCtx(analyzer: Analyzer = scriptedAnalyzer(() => aiOut()), dir = tmpDir()): Promise<TestCtx> {
   const db = await (await template()).clone();
   openDbs.push(db);
-  return { db, receipts: createFsReceiptStore(path.join(dir, "receipts")), analyzer, dir };
+  return { db, receipts: createFsReceiptStore(path.join(dir, "receipts")), analyzer, dir, identity: createLocalIdentity(db) };
 }
 
 /**

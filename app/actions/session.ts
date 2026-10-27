@@ -1,21 +1,37 @@
 "use server";
 import { redirect } from "next/navigation";
-import { checkPasscode } from "@/lib/auth.ts";
 import { readConfig } from "@/lib/config.ts";
 import { clearSessionCookie, setSessionCookie } from "@/lib/session.ts";
-import { str, withQuery } from "./util.ts";
+import * as server from "@/lib/server.ts";
+import { signIn, signUp } from "@/lib/members.ts";
+import { errorMessage, str, withQuery } from "./util.ts";
+
+function requireSecret(): void {
+  if (!readConfig().sessionSecret) redirect(withQuery("/", "error", "Falta SESSION_SECRET en el entorno del servidor."));
+}
 
 export async function login(fd: FormData) {
-  const role = str(fd, "role");
-  const passcode = str(fd, "passcode");
-  const cfg = readConfig();
-  if (!cfg.sessionSecret) redirect(withQuery("/", "error", "Falta SESSION_SECRET en el entorno del servidor."));
-  if (role !== "organizer" && role !== "collaborator") redirect(withQuery("/", "error", "Elegí un rol."));
-  const expected = role === "organizer" ? cfg.organizerPasscode : cfg.collaboratorPasscode;
-  if (!expected) redirect(withQuery("/", "error", `Falta ${role === "organizer" ? "ORGANIZER_PASSCODE" : "COLLABORATOR_PASSCODE"} en el entorno.`));
-  if (!checkPasscode(passcode, expected)) redirect(withQuery(`/?role=${role}`, "error", "Código incorrecto. Probá de nuevo."));
-  await setSessionCookie(role);
-  redirect("/evento");
+  requireSecret();
+  let target = "/evento";
+  try {
+    const m = await signIn(await server.authCtx(), str(fd, "email"), str(fd, "password"));
+    await setSessionCookie(m.id);
+  } catch (err) {
+    target = withQuery(`/?email=${encodeURIComponent(str(fd, "email"))}`, "error", errorMessage(err));
+  }
+  redirect(target);
+}
+
+export async function createAccount(fd: FormData) {
+  requireSecret();
+  let target = "/evento";
+  try {
+    const m = await signUp(await server.authCtx(), { email: str(fd, "email"), password: str(fd, "password"), name: str(fd, "name") });
+    await setSessionCookie(m.id);
+  } catch (err) {
+    target = withQuery(`/?mode=signup&email=${encodeURIComponent(str(fd, "email"))}`, "error", errorMessage(err));
+  }
+  redirect(target);
 }
 
 export async function logout() {

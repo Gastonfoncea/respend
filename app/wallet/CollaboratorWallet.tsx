@@ -1,16 +1,15 @@
-// Vista "Mi perfil" del colaborador: quién es (nombre declarado) y a qué dirección le pagan los reembolsos.
+// Vista "Mi perfil" del colaborador: quién es y a qué dirección le pagan los reembolsos.
+// La wallet la fija el organizador en "Equipo": el colaborador la ve, no la cambia.
 // No muestra nada de la wallet del agente (saldos, fondeo, gas): eso es solo del organizador.
 import * as server from "@/lib/server.ts";
 import * as repo from "@/lib/repo.ts";
 import { formatBalance } from "@/lib/money.ts";
 import { CHAIN_ID, WARS_ADDRESS, addressUrl } from "@/lib/config.ts";
 import type { Session } from "@/lib/types.ts";
-import { setMyProfileAction } from "../actions/requests.ts";
 import AppShell, { EventHead } from "../components/AppShell.tsx";
 import CopyAddress from "../components/CopyAddress.tsx";
 import Flash from "../components/Flash.tsx";
 import Icon from "../components/Icon.tsx";
-import SubmitButton from "../components/SubmitButton.tsx";
 import { GroupedAddress } from "../components/ui.tsx";
 import { walletInfo } from "../components/wallet.ts";
 
@@ -18,10 +17,10 @@ export default async function CollaboratorWallet({ session, error, ok }: { sessi
   const db = await server.db();
   const cfg = server.config();
   const policy = await repo.getPolicy(db);
-  const profile = await repo.getCollaboratorProfile(db);
-  const wallet = profile?.wallet ?? null;
-  const name = profile?.name ?? null;
-  const complete = Boolean(wallet && name);
+  const me = await repo.getMember(db, session.memberId);
+  const wallet = me?.wallet ?? null;
+  const name = session.name;
+  const complete = Boolean(wallet);
   const info = wallet ? await walletInfo(wallet) : null;
 
   return (
@@ -32,9 +31,10 @@ export default async function CollaboratorWallet({ session, error, ok }: { sessi
         <section className="rise" style={{ paddingTop: 20 }}>
           <p className="label">Tu perfil de cobro</p>
           <h1 className={`display fund-state ${complete ? "t-green" : ""}`}>
-            {complete ? `Hola, ${name}` : !name && !wallet ? "Completá tu perfil" : !name ? "Falta tu nombre" : "Falta tu wallet"}
+            {complete ? `Hola, ${name}` : "Falta tu wallet"}
           </h1>
           <p className="small dim">
+            {me?.email ? <>Entraste con <b>{me.email}</b>. </> : null}
             El organizador ve tu nombre en cada gasto que presentás. Los reembolsos aprobados te llegan a tu wallet, en wARS (pesos
             digitales de Ripio) sobre la red Celo. 1 wARS = 1 peso.
           </p>
@@ -57,37 +57,17 @@ export default async function CollaboratorWallet({ session, error, ok }: { sessi
           </section>
         )}
 
-        <form action={setMyProfileAction} className="stack gap-16 rise" style={{ "--i": 2 } as React.CSSProperties}>
-          <label className="field">
-            <span className="field-label">Tu nombre</span>
-            <input className="input" name="name" required minLength={2} maxLength={60} defaultValue={name ?? ""} placeholder="Ej.: Gastón Foncea" autoComplete="name" />
-            <span className="field-help">Así te identifica el organizador cuando revisa tus gastos.</span>
-          </label>
-          <label className="field">
-            <span className="field-label">{wallet ? "Wallet de cobro" : "Pegá tu dirección"}</span>
-            <input
-              className="input mono"
-              name="wallet"
-              required
-              pattern="^\s*0x[0-9a-fA-F]{40}\s*$"
-              defaultValue={wallet ?? cfg.demoCollaboratorAddress ?? ""}
-              placeholder="0x…"
-              spellCheck={false}
-              autoComplete="off"
-            />
-            <span className="field-help">
-              La de tu MetaMask (empieza con 0x). Es la misma dirección en todas las redes; nosotros pagamos solo en Celo.
-            </span>
-          </label>
-          <div className="actions">
-            <SubmitButton pendingText="Guardando…">{complete ? "Guardar cambios" : "Guardar perfil"}</SubmitButton>
+        {!wallet && (
+          <div className="notice notice-amb rise" style={{ "--i": 2 } as React.CSSProperties}>
+            <Icon name="warn" size={18} stroke={2} />
+            <span>Pasale tu dirección (la de tu MetaMask, empieza con 0x) al organizador: la carga él en &quot;Equipo&quot;. Hasta entonces no podés presentar gastos.</span>
           </div>
-        </form>
+        )}
 
         <div className="notice rise" style={{ "--i": 3 } as React.CSSProperties}>
           <Icon name="warn" size={18} stroke={2} />
           <span>
-            Si cambiás tu nombre o tu wallet, los gastos que ya enviaste mantienen los datos de cuando los presentaste: el organizador aprobó ese destino exacto.
+            Tu wallet de cobro la fija el organizador. Si la cambia, los gastos que ya enviaste mantienen los datos de cuando los presentaste: se aprobó ese destino exacto.
           </span>
         </div>
 

@@ -8,6 +8,7 @@ import type {
   AuthorizationRow,
   ClarificationRow,
   EventRow,
+  MemberRow,
   PaymentRow,
   Policy,
   RequestRow,
@@ -73,16 +74,21 @@ export function listRequests(q: Queryable): Promise<RequestRow[]> {
   return q.query<RequestRow>("SELECT * FROM requests ORDER BY id DESC");
 }
 
+/** Solo los gastos que presentó ese miembro (lo que ve un colaborador). */
+export function listRequestsByMember(q: Queryable, memberId: number): Promise<RequestRow[]> {
+  return q.query<RequestRow>("SELECT * FROM requests WHERE member_id = $1 ORDER BY id DESC", [memberId]);
+}
+
 export function insertRequest(
   q: Queryable,
-  r: { description: string; recipient: string; claimantName: string | null; filePath: string; fileSha256: string; mime: string },
+  r: { description: string; recipient: string; claimantName: string | null; memberId: number; filePath: string; fileSha256: string; mime: string },
 ): Promise<number> {
   const now = nowIso();
   return insertId(
     q,
-    `INSERT INTO requests (created_at, updated_at, description, recipient, claimant_name, file_path, file_sha256, mime, status)
-     VALUES ($1, $1, $2, $3, $4, $5, $6, $7, 'submitted')`,
-    [now, r.description, r.recipient, r.claimantName, r.filePath, r.fileSha256, r.mime],
+    `INSERT INTO requests (created_at, updated_at, description, recipient, claimant_name, member_id, file_path, file_sha256, mime, status)
+     VALUES ($1, $1, $2, $3, $4, $5, $6, $7, $8, 'submitted')`,
+    [now, r.description, r.recipient, r.claimantName, r.memberId, r.filePath, r.fileSha256, r.mime],
   );
 }
 
@@ -255,28 +261,49 @@ export function listAudit(q: Queryable, requestId: number): Promise<AuditRow[]> 
   return q.query<AuditRow>("SELECT * FROM audit_log WHERE request_id = $1 ORDER BY id", [requestId]);
 }
 
-// --- perfil del colaborador ---
+// --- miembros ---
 
-export interface CollaboratorProfile {
-  name: string | null;
-  wallet: string;
+export function listMembers(q: Queryable): Promise<MemberRow[]> {
+  return q.query<MemberRow>("SELECT * FROM members ORDER BY role DESC, name, id");
 }
 
-export async function getCollaboratorProfile(q: Queryable): Promise<CollaboratorProfile | null> {
-  const row = await one<CollaboratorProfile>(q, "SELECT name, wallet FROM collaborator_profile WHERE id = 1");
-  return row ? { name: row.name ?? null, wallet: row.wallet } : null;
+export function getMember(q: Queryable, id: number): Promise<MemberRow | null> {
+  return one<MemberRow>(q, "SELECT * FROM members WHERE id = $1", [id]);
 }
 
-export async function getCollaboratorWallet(q: Queryable): Promise<string | null> {
-  return (await getCollaboratorProfile(q))?.wallet ?? null;
+export function getMemberByEmail(q: Queryable, email: string): Promise<MemberRow | null> {
+  return one<MemberRow>(q, "SELECT * FROM members WHERE email = $1", [email]);
 }
 
-export async function setCollaboratorProfile(q: Queryable, p: { name: string | null; wallet: string }): Promise<void> {
-  await q.query(
-    `INSERT INTO collaborator_profile (id, name, wallet, updated_at) VALUES (1, $1, $2, $3)
-     ON CONFLICT (id) DO UPDATE SET name = excluded.name, wallet = excluded.wallet, updated_at = excluded.updated_at`,
-    [p.name, p.wallet, nowIso()],
+export function getMemberByAuthId(q: Queryable, authUserId: string): Promise<MemberRow | null> {
+  return one<MemberRow>(q, "SELECT * FROM members WHERE auth_user_id = $1", [authUserId]);
+}
+
+export async function countMembers(q: Queryable): Promise<number> {
+  return (await one<{ n: number }>(q, "SELECT COUNT(*)::int AS n FROM members"))!.n;
+}
+
+/** Organizadores activos (para no dejar la app sin nadie que la administre). */
+export async function countActiveOrganizers(q: Queryable): Promise<number> {
+  return (await one<{ n: number }>(q, "SELECT COUNT(*)::int AS n FROM members WHERE role = 'organizer' AND active"))!.n;
+}
+
+export function insertMember(
+  q: Queryable,
+  m: { email: string; name: string; role: MemberRow["role"]; wallet: string | null; authUserId?: string | null },
+): Promise<number> {
+  const now = nowIso();
+  return insertId(
+    q,
+    "INSERT INTO members (email, name, role, wallet, auth_user_id, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $6)",
+    [m.email, m.name, m.role, m.wallet, m.authUserId ?? null, now],
   );
+}
+
+const MEMBER_UPDATABLE = new Set(["name", "role", "wallet", "active", "auth_user_id"]);
+
+export function updateMember(q: Queryable, id: number, fields: Partial<Pick<MemberRow, "name" | "role" | "wallet" | "active" | "auth_user_id">>): Promise<void> {
+  return updateWhitelisted(q, "members", MEMBER_UPDATABLE, id, fields as Row);
 }
 
 // --- configuración del agente ---
