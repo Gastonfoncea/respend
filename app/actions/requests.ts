@@ -23,13 +23,9 @@ export async function submitExpenseAction(fd: FormData) {
     const file = fd.get("receipt");
     if (!(file instanceof File) || file.size === 0) throw new wf.WorkflowError("Falta la imagen del comprobante.");
     const ctx = await server.ctx();
-    // El destinatario sale siempre del perfil del colaborador, nunca del formulario.
-    const profile = await repo.getCollaboratorProfile(ctx.db);
-    if (!profile?.wallet || !profile.name) throw new wf.WorkflowError("Primero completá tu perfil (nombre y wallet de cobro) en \"Mi perfil\".");
-    const recipient = profile.wallet;
+    // El destinatario sale siempre del perfil del miembro (lo fija el organizador), nunca del formulario.
     const id = await wf.submitExpense(ctx, session, {
       description: str(fd, "description"),
-      recipient,
       file: { bytes: new Uint8Array(await file.arrayBuffer()), mime: file.type },
     });
     await wf.analyzeRequest(ctx, id);
@@ -44,10 +40,11 @@ export async function submitExpenseAction(fd: FormData) {
 export async function retryAnalysisAction(fd: FormData) {
   let target: string;
   try {
-    assertRole(await getSession(), ["organizer", "collaborator"]);
+    const session = assertRole(await getSession(), ["organizer", "collaborator"]);
     const id = idFrom(fd);
     target = reqPath(id);
     const ctx = await server.ctx();
+    if (!(await wf.requestFor(ctx, session, id))) throw new wf.WorkflowError(`No existe la solicitud #${id}`);
     const r = await wf.analyzeRequest(ctx, id);
     if (r.ai_error) target = withQuery(target, "error", r.ai_error);
     else target = await startAutoPay(ctx, id, target);
@@ -205,19 +202,6 @@ export async function updatePolicyAction(fd: FormData) {
     target = withQuery(target, "error", errorMessage(err));
   }
   revalidatePath("/evento");
-  redirect(target);
-}
-
-export async function setMyProfileAction(fd: FormData) {
-  let target: string;
-  try {
-    await wf.setCollaboratorProfile(await server.ctx(), await getSession(), { name: str(fd, "name"), wallet: str(fd, "wallet") });
-    target = withQuery("/wallet", "ok", "Perfil guardado. Los próximos gastos salen con este nombre y se pagan a esta wallet.");
-  } catch (err) {
-    target = withQuery("/wallet", "error", errorMessage(err));
-  }
-  revalidatePath("/wallet");
-  revalidatePath("/presentar");
   redirect(target);
 }
 

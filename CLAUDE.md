@@ -14,6 +14,8 @@ Reglas que no se rompen:
 - La base es Postgres (Supabase; PGlite en tests y en desarrollo sin `DATABASE_URL`). El esquema vive en `supabase/migrations/` y solo cambia con una migración nueva, nunca editando una ya aplicada.
 - Toda escritura va en `tx(db, async (q) => …)`, que toma el lock global de escritura. Adentro se usa siempre `q`, nunca `db`.
 - Las fotos de los tickets van a Supabase Storage (bucket privado `tickets`) a través de `lib/receipts.ts`.
+- Cuentas: mail y contraseña con Supabase Auth (`lib/identity.ts`; proveedor local en tests y desarrollo). La cookie solo lleva el id del miembro; rol, nombre y si está activo se leen de `members` en cada pedido (`lib/session.ts`). La primera cuenta es la del organizador; el resto entra solo si el organizador lo agregó en "Equipo" (`lib/members.ts`).
+- La wallet de cobro la fija el organizador. El colaborador ve solo sus solicitudes y comprobantes (`requestFor`, `visibleRequests` en `lib/workflow.ts`): lo ajeno responde 404.
 
 Convenciones:
 - `lib/repo.ts`, `lib/workflow.ts` y la herramienta de pago son async: cada llamada lleva `await`.

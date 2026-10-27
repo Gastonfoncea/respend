@@ -20,10 +20,10 @@ La app hace lo mismo que hoy, pero corre en la nube.
 
 ## 2. Login con roles
 
-- [ ] Supabase Auth (mail con enlace mágico o Google).
-- [ ] Roles organizador y colaborador por persona. Reemplaza los códigos compartidos.
-- [ ] Cada gasto queda atado a un usuario real; el perfil (nombre y wallet) pasa a ser por usuario.
-- [ ] Permisos en el servidor (y RLS en Supabase como segunda barrera).
+- [x] Supabase Auth con mail y contraseña (el enlace mágico necesita un SMTP propio y Google, credenciales de Google Cloud: se suman después).
+- [x] Roles organizador y colaborador por persona. Reemplaza los códigos compartidos. Alta por invitación desde "Equipo".
+- [x] Cada gasto queda atado a un usuario real; el perfil (nombre y wallet) pasa a ser por usuario. La wallet la fija el organizador.
+- [x] Permisos en el servidor; cada colaborador ve solo lo suyo. RLS activado sin políticas: solo el servidor accede a las tablas.
 
 ## 3. Eventos
 

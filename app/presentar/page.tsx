@@ -16,10 +16,10 @@ export default async function PresentarPage({ searchParams }: { searchParams: Pr
   const cfg = server.config();
   const db = await server.db();
   const policy = await repo.getPolicy(db);
-  const profile = await repo.getCollaboratorProfile(db);
-  const wallet = profile?.wallet ?? null;
-  const name = profile?.name ?? null;
-  const complete = Boolean(wallet && name);
+  const me = await repo.getMember(db, session.memberId);
+  const wallet = me?.wallet ?? null;
+  const name = session.name;
+  const complete = Boolean(wallet);
   const missingKey = cfg.ai.apiKey == null && cfg.aiMode === "real";
 
   return (
@@ -36,14 +36,13 @@ export default async function PresentarPage({ searchParams }: { searchParams: Pr
 
         {complete ? (
           <p className="small dim rise" style={{ margin: 0 }}>
-            Reclamás como <b style={{ color: "var(--tx)" }}>{name}</b> · cobrás en <span className="mono">{shortAddr(wallet!)}</span> ·{" "}
-            <Link href="/wallet">cambiar</Link>
+            Reclamás como <b style={{ color: "var(--tx)" }}>{name}</b> · cobrás en <span className="mono">{shortAddr(wallet!)}</span>
           </p>
         ) : (
           <div className="notice notice-amb">
             <Icon name="warn" size={18} stroke={2} />
             <span>
-              Primero completá tu perfil: nombre y wallet de cobro. <Link href="/wallet">Ir a Mi perfil</Link>
+              Todavía no tenés wallet de cobro. Pedile al organizador que la cargue en &quot;Equipo&quot;. <Link href="/wallet">Ver mi perfil</Link>
             </span>
           </div>
         )}

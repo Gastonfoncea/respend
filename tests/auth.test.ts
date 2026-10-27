@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { signSession, verifySession, checkPasscode, AuthError } from "../lib/auth.ts";
+import { signSession, verifySession, sessionFor, AuthError } from "../lib/auth.ts";
 import { analyzeRequest, authorize, correctFields, rejectRequest, submitExpense, updatePolicy, requestClarification } from "../lib/workflow.ts";
 import { DEMO_POLICY } from "../lib/demo.ts";
 import { makeCtx, COLLAB, ORG, RECIPIENT, tinyPng } from "./helpers.ts";
@@ -8,11 +8,11 @@ import { makeCtx, COLLAB, ORG, RECIPIENT, tinyPng } from "./helpers.ts";
 const SECRET = "test-secret-0123456789";
 
 test("cookie firmada: válida, adulterada y con otro secreto", async () => {
-  const tok = signSession({ role: "collaborator", issuedAt: Date.now() }, SECRET);
-  assert.equal(verifySession(tok, SECRET)?.role, "collaborator");
-  // Cambiar el rol en el payload sin re-firmar.
+  const tok = signSession({ memberId: 2, issuedAt: Date.now() }, SECRET);
+  assert.equal(verifySession(tok, SECRET)?.memberId, 2);
+  // Cambiar el miembro en el payload sin re-firmar.
   const [, sig] = tok.split(".");
-  const forged = Buffer.from(JSON.stringify({ r: "organizer", t: Date.now() })).toString("base64url");
+  const forged = Buffer.from(JSON.stringify({ m: 1, t: Date.now() })).toString("base64url");
   assert.equal(verifySession(`${forged}.${sig}`, SECRET), null);
   // Firma alterada.
   assert.equal(verifySession(tok.slice(0, -2) + (tok.endsWith("AA") ? "BB" : "AA"), SECRET), null);
@@ -23,13 +23,17 @@ test("cookie firmada: válida, adulterada y con otro secreto", async () => {
 
 test("sesión vencida se rechaza", async () => {
   const old = Date.now() - 8 * 24 * 3600 * 1000;
-  assert.equal(verifySession(signSession({ role: "organizer", issuedAt: old }, SECRET), SECRET), null);
+  assert.equal(verifySession(signSession({ memberId: 1, issuedAt: old }, SECRET), SECRET), null);
 });
 
-test("passcode", async () => {
-  assert.equal(checkPasscode("1234", "1234"), true);
-  assert.equal(checkPasscode("1235", "1234"), false);
-  assert.equal(checkPasscode("1234", null), false);
+test("el rol sale de la base, no de la cookie; un miembro desactivado no tiene sesión", async () => {
+  const token = { memberId: 2, issuedAt: Date.now() };
+  const base = { id: 2, auth_user_id: "u", email: "j@x.test", name: "Juan", role: "collaborator" as const, wallet: null, active: true, created_at: "", updated_at: "" };
+  assert.equal(sessionFor(token, base)?.role, "collaborator");
+  assert.equal(sessionFor(token, { ...base, role: "organizer" })?.role, "organizer");
+  assert.equal(sessionFor(token, { ...base, active: false }), null);
+  assert.equal(sessionFor(token, null), null);
+  assert.equal(sessionFor(token, { ...base, id: 3 }), null);
 });
 
 test("el colaborador no puede autorizar, corregir, rechazar, pedir aclaración ni cambiar la política", async () => {

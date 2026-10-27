@@ -4,6 +4,7 @@ import { agentDigest } from "@/lib/digest.ts";
 import AutoRefresh from "../components/AutoRefresh.tsx";
 import * as server from "@/lib/server.ts";
 import * as repo from "@/lib/repo.ts";
+import * as wf from "@/lib/workflow.ts";
 import { getBudget } from "@/lib/budget.ts";
 import { centsToWei } from "@/lib/money.ts";
 import { getAgentAddress } from "@/lib/chain/signer.ts";
@@ -57,7 +58,7 @@ export default async function EventoPage({ searchParams }: { searchParams: Promi
   const db = await server.db();
   const cfg = server.config();
   const policy = await repo.getPolicy(db);
-  const requests = await repo.listRequests(db);
+  const requests = await wf.visibleRequests(await server.ctx(), session);
   const isOrg = session.role === "organizer";
   let n = 0;
 

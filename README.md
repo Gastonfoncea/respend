@@ -14,7 +14,7 @@ Requiere Node ≥ 22.13 (se recomienda 24).
 
 ```bash
 npm install
-cp .env.example .env.local      # completá passcodes, SESSION_SECRET y AI_GATEWAY_API_KEY
+cp .env.example .env.local      # completá SESSION_SECRET y AI_GATEWAY_API_KEY (y PAYMENT_MODE=simulated)
 npm run demo:reset              # crea data/ con el evento y la política de demo
 npm run build && npm start      # http://localhost:3000
 npm test                        # tests sin red ni IA
@@ -26,7 +26,7 @@ Sin key de IA la app arranca igual: las solicitudes muestran "Falta AI_GATEWAY_A
 
 | Variable | Para qué |
 |---|---|
-| `ORGANIZER_PASSCODE`, `COLLABORATOR_PASSCODE` | Passcodes de los dos roles. |
+| `OWNER_EMAIL` | Opcional: el único mail que puede crear la primera cuenta (la del organizador). El resto entra por invitación desde "Equipo". |
 | `SESSION_SECRET` | Firma HMAC-SHA256 de la cookie de sesión. |
 | `AI_GATEWAY_API_KEY` | Key de Vercel AI Gateway (proveedor por defecto, modelo `openai/gpt-5.4-mini`). |
 | `OPENAI_API_KEY` | Alternativa: OpenAI directo (`gpt-5.4-mini`), solo si no hay key de Gateway. |

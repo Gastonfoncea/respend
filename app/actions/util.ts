@@ -4,9 +4,10 @@ import { AuthError } from "@/lib/auth.ts";
 import { PaymentError } from "@/lib/chain/payTool.ts";
 import { MoneyParseError } from "@/lib/money.ts";
 import { SignerError } from "@/lib/chain/signer.ts";
+import { IdentityError } from "@/lib/identity.ts";
 
 export function errorMessage(err: unknown): string {
-  if (err instanceof WorkflowError || err instanceof AuthError || err instanceof PaymentError || err instanceof MoneyParseError || err instanceof SignerError) {
+  if (err instanceof WorkflowError || err instanceof AuthError || err instanceof PaymentError || err instanceof MoneyParseError || err instanceof SignerError || err instanceof IdentityError) {
     return err.message;
   }
   // Solo el mensaje, nunca el objeto completo (podría arrastrar headers o config).

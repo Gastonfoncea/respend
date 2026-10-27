@@ -2,9 +2,24 @@
 
 export type Role = "organizer" | "collaborator";
 
+/** Sesión vigente: el miembro que entró. El rol y el nombre salen de la base en cada pedido. */
 export interface Session {
+  memberId: number;
   role: Role;
+  name: string;
   issuedAt: number;
+}
+
+export interface MemberRow {
+  id: number;
+  auth_user_id: string | null;
+  email: string;
+  name: string;
+  role: Role;
+  wallet: string | null;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
 }
 
 export type RequestStatus =
@@ -53,6 +68,7 @@ export interface RequestRow {
   recipient: string;
   /** Nombre que declaró el colaborador al presentar (copia; no cambia si después edita su perfil). */
   claimant_name: string | null;
+  member_id: number | null;
   file_path: string;
   file_sha256: string;
   mime: string;

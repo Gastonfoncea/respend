@@ -2,12 +2,12 @@
 // Se niega si hay pagos en mainnet registrados, salvo --force (perderías el registro de esos pagos).
 // Con DATABASE_URL apunta a Postgres (Supabase): ahí además exige --remote, para no borrar producción por error.
 // Los comprobantes de Supabase Storage no se borran (se llaman por su sha256 y no molestan).
+// El equipo (members) y sus cuentas se conservan: borrarlos dejaría usuarios huérfanos en Supabase Auth.
 import fs from "node:fs";
 import { readConfig } from "../lib/config.ts";
 import { openPglite, openPostgres } from "../lib/db.ts";
 import * as repo from "../lib/repo.ts";
 import { DEMO_POLICY } from "../lib/demo.ts";
-import { normalizeRecipient } from "../lib/policy.ts";
 
 const cfg = readConfig();
 const force = process.argv.includes("--force");
@@ -24,17 +24,14 @@ try {
     console.error(`Hay ${n} pago(s) en mainnet registrados en ${where}. Hacé una copia y usá --force si querés borrar igual.`);
     process.exit(1);
   }
-  const demoWallet = cfg.demoCollaboratorAddress ? normalizeRecipient(cfg.demoCollaboratorAddress) : null;
   await db.tx(async (q) => {
     await q.query(
-      "TRUNCATE payments, authorizations, clarifications, audit_log, requests, event, collaborator_profile, agent_settings RESTART IDENTITY",
+      "TRUNCATE payments, authorizations, clarifications, audit_log, requests, event, agent_settings RESTART IDENTITY",
     );
     await repo.upsertEvent(q, DEMO_POLICY);
-    // Wallet de cobro del colaborador de demo, si está en el entorno (el colaborador la puede cambiar desde "Mi perfil").
-    if (demoWallet) await repo.setCollaboratorProfile(q, { name: null, wallet: demoWallet });
   });
   if (!cfg.supabaseUrl) fs.rmSync(cfg.receiptsDir, { recursive: true, force: true });
-  console.log(`Datos borrados en ${where}. Evento "${DEMO_POLICY.name}" creado con la política de demo.${demoWallet ? ` Wallet del colaborador: ${demoWallet}.` : ""}`);
+  console.log(`Datos borrados en ${where}. Evento "${DEMO_POLICY.name}" creado con la política de demo. El equipo se conservó.`);
 } finally {
   await db.close();
 }

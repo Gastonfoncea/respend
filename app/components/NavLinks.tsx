@@ -8,6 +8,7 @@ const LINKS: { href: string; label: string; icon: IconName; match: (p: string) =
   { href: "/evento", label: "Inicio", icon: "home", match: (p) => p === "/evento" || p.startsWith("/solicitudes") || p === "/presentar" },
   { href: "/evento/politica", label: "Evento", icon: "sliders", match: (p) => p.startsWith("/evento/politica") },
   { href: "/agente", label: "Agente", icon: "spark", match: (p) => p.startsWith("/agente"), orgOnly: true },
+  { href: "/equipo", label: "Equipo", icon: "user", match: (p) => p.startsWith("/equipo"), orgOnly: true },
   { href: "/wallet", label: "Wallet", icon: "wallet", match: (p) => p.startsWith("/wallet") },
 ];
 
