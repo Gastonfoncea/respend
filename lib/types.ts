@@ -37,12 +37,10 @@ export type Recommendation = "approve" | "needs_info" | "flag_review" | "reject"
 
 export type PaymentStatus = "preparing" | "signed" | "sent" | "confirmed" | "failed" | "uncertain";
 
+/** Política general (una por instalación): nombre, tope por ticket y presupuesto total. */
 export interface EventRow {
   id: number;
   name: string;
-  start_date: string;
-  end_date: string;
-  categories: string; // JSON
   cap_per_receipt_cents: number;
   budget_cents: number;
   policy_version: number;
@@ -50,14 +48,26 @@ export interface EventRow {
   updated_at: string;
 }
 
-export interface Policy {
+/** Política general: lo que vale para todos los presupuestos. */
+export interface GeneralPolicy {
   name: string;
-  startDate: string;
-  endDate: string;
-  categories: string[];
   capPerReceiptCents: number;
   budgetCents: number;
   version: number;
+}
+
+/**
+ * Política con la que se evalúa un gasto: la general más el presupuesto al que se presenta
+ * (nombre y fechas) y las categorías activas.
+ */
+export interface Policy extends GeneralPolicy {
+  budgetId: number | null;
+  startDate: string;
+  endDate: string;
+  /** Claves de las categorías activas. */
+  categories: string[];
+  /** Nombre y descripción de cada una: el agente las usa para clasificar. */
+  categoryInfo: { key: string; name: string; description: string }[];
 }
 
 export interface RequestRow {
@@ -69,6 +79,8 @@ export interface RequestRow {
   /** Nombre que declaró el colaborador al presentar (copia; no cambia si después edita su perfil). */
   claimant_name: string | null;
   member_id: number | null;
+  budget_id: number | null;
+  assignment_id: number | null;
   file_path: string;
   file_sha256: string;
   mime: string;
@@ -101,10 +113,20 @@ export interface ClarificationRow {
   created_at: string;
 }
 
+export type AuthorizationMode = "auto" | "full" | "up_to_balance" | "exception";
+
 export interface AuthorizationRow {
   id: number;
   request_id: number;
+  /** Lo aprobado: lo que se paga. */
   amount_cents: number;
+  /** El importe del ticket al autorizar. */
+  requested_cents: number | null;
+  assignment_id: number | null;
+  /** Lo que se pagó por encima del saldo de la asignación (solo mode = exception). */
+  exception_cents: number;
+  exception_reason: string | null;
+  mode: AuthorizationMode;
   token_amount: string;
   token_address: string;
   chain_id: number;
@@ -169,6 +191,8 @@ export type CheckRule =
   | "category_allowed"
   | "recipient_valid"
   | "budget_available"
+  | "budget_window"
+  | "assignment_found"
   | "duplicate_file"
   | "duplicate_data";
 
@@ -182,4 +206,43 @@ export interface Explanation {
   agentText: string | null;
   rules: Check[];
   evidence: string[];
+}
+
+export interface CategoryRow {
+  key: string;
+  name: string;
+  description: string;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BudgetRow {
+  id: number;
+  name: string;
+  starts_on: string;
+  ends_on: string;
+  autopay_max_per_receipt_cents: number;
+  status: "open" | "closed";
+  created_by: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AssignmentRow {
+  id: number;
+  budget_id: number;
+  member_id: number;
+  category_key: string | null;
+  amount_cents: number;
+  created_by: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Saldo de una asignación: consumido = autorizaciones no revocadas; disponible nunca es negativo. */
+export interface AssignmentBalance {
+  assignment: AssignmentRow;
+  consumedCents: number;
+  availableCents: number;
 }

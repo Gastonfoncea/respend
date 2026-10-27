@@ -30,6 +30,8 @@ export const RULE_LABEL: Record<CheckRule, string> = {
   budget_available: "Hay presupuesto",
   duplicate_file: "Archivo no repetido",
   duplicate_data: "Datos no repetidos",
+  budget_window: "Presupuesto abierto",
+  assignment_found: "Tiene presupuesto asignado",
 };
 
 export const PAYMENT_LABEL: Record<PaymentStatus, string> = {

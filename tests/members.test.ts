@@ -10,7 +10,9 @@ import { createFsReceiptStore } from "../lib/receipts.ts";
 import * as repo from "../lib/repo.ts";
 import { DEMO_POLICY } from "../lib/demo.ts";
 import type { Session } from "../lib/types.ts";
-import { aiOut, makeCtx, scriptedAnalyzer, COLLAB, COLLAB_ID, ORG, ORG_ID, RECIPIENT, tinyPng, tmpDir, type TestCtx } from "./helpers.ts";
+import { aiOut, makeCtx, scriptedAnalyzer, BUDGET_ID, COLLAB, COLLAB_ID, ORG, ORG_ID, RECIPIENT, tinyPng, tmpDir, type TestCtx } from "./helpers.ts";
+import { setAssignment } from "../lib/budgetAdmin.ts";
+import { createPayTool } from "../lib/chain/payTool.ts";
 
 const OTHER = "0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359";
 const OK = { verifiedAmountAndRecipient: true, reviewedAlerts: false, reason: "" };
@@ -125,16 +127,25 @@ test("el gasto se paga a la wallet que fijó el organizador y guarda quién lo p
   await assert.rejects(submit(ctx, { memberId: sinWallet, role: "collaborator", name: "Eli", issuedAt: Date.now() }, 3), /wallet de cobro/);
 });
 
-test("cambiar la wallet no modifica gastos ya presentados ni su autorización", async () => {
+test("cambiar la wallet revoca la autorización pendiente y el gasto pasa a la wallet nueva; lo pagado no se toca", async () => {
   const ctx = await makeCtx();
+  const paid = await submit(ctx, COLLAB, 5);
+  await analyzeRequest(ctx, paid);
+  await authorize(ctx, ORG, paid, OK);
+  await createPayTool({ db: ctx.db, mode: "simulated" })(paid);
   const id = await submit(ctx, COLLAB);
   await analyzeRequest(ctx, id);
-  await authorize(ctx, ORG, id, OK);
+  // Mismos datos que el anterior (analizador de prueba): sale como posible duplicado y se autoriza con motivo.
+  await authorize(ctx, ORG, id, { ...OK, reviewedAlerts: true, reason: "revisado" });
   await updateMember(ctx, ORG, COLLAB_ID, { wallet: OTHER });
   const r = (await repo.getRequest(ctx.db, id))!;
-  assert.equal(r.recipient, RECIPIENT);
-  assert.equal(r.status, "authorized");
-  assert.equal((await repo.getActiveAuthorization(ctx.db, id))!.recipient, RECIPIENT);
+  assert.equal(r.recipient, OTHER);
+  assert.equal(r.status, "analyzed");
+  assert.equal(await repo.getActiveAuthorization(ctx.db, id), null);
+  assert.ok((await repo.listAudit(ctx.db, id)).some((a) => a.action === "authorization_revoked" && a.detail?.includes("wallet_changed")));
+  // Lo ya pagado conserva su destino.
+  assert.equal((await repo.getRequest(ctx.db, paid))!.recipient, RECIPIENT);
+  assert.equal((await repo.getRequest(ctx.db, paid))!.status, "reimbursed");
   assert.equal((await repo.getRequest(ctx.db, await submit(ctx, COLLAB, 2)))!.recipient, OTHER);
   const [{ n }] = await ctx.db.query<{ n: number }>("SELECT COUNT(*)::int AS n FROM audit_log WHERE action = 'member_updated'");
   assert.equal(n, 1);
@@ -143,6 +154,7 @@ test("cambiar la wallet no modifica gastos ya presentados ni su autorización", 
 test("privacidad: un colaborador no ve ni responde gastos de otro; el organizador ve todo", async () => {
   const ctx = await makeCtx(scriptedAnalyzer(() => aiOut({ recommendation: "needs_info", category: "indeterminada", clarification_questions: ["¿Qué?"] })));
   const otroId = await addMember(ctx, ORG, { email: "fede@x.com", name: "Fede", role: "collaborator", wallet: OTHER });
+  await setAssignment(ctx, ORG, { budgetId: BUDGET_ID, memberId: otroId, categoryKey: null, amountCents: 100000 });
   const FEDE: Session = { memberId: otroId, role: "collaborator", name: "Fede", issuedAt: Date.now() };
   const mine = await submit(ctx, COLLAB, 1);
   const his = await submit(ctx, FEDE, 2);
@@ -159,6 +171,7 @@ test("privacidad: un colaborador no ve ni responde gastos de otro; el organizado
 test("la vista previa no le muestra a un colaborador el número del gasto de otro", async () => {
   const ctx = await makeCtx();
   const otroId = await addMember(ctx, ORG, { email: "gabi@x.com", name: "Gabi", role: "collaborator", wallet: OTHER });
+  await setAssignment(ctx, ORG, { budgetId: BUDGET_ID, memberId: otroId, categoryKey: null, amountCents: 100000 });
   await submit(ctx, { memberId: otroId, role: "collaborator", name: "Gabi", issuedAt: Date.now() }, 9);
   const r = await previewExpense(ctx, COLLAB, { bytes: tinyPng(9) });
   assert.ok(r.ok);

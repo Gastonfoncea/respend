@@ -16,6 +16,11 @@ import { errorMessage, idFrom, str, withQuery } from "./util.ts";
 
 const reqPath = (id: number) => `/solicitudes/${id}`;
 
+function budgetIdFrom(fd: FormData): number | null {
+  const n = Number.parseInt(str(fd, "budgetId"), 10);
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
+
 export async function submitExpenseAction(fd: FormData) {
   let target: string;
   try {
@@ -26,6 +31,7 @@ export async function submitExpenseAction(fd: FormData) {
     // El destinatario sale siempre del perfil del miembro (lo fija el organizador), nunca del formulario.
     const id = await wf.submitExpense(ctx, session, {
       description: str(fd, "description"),
+      budgetId: budgetIdFrom(fd),
       file: { bytes: new Uint8Array(await file.arrayBuffer()), mime: file.type },
     });
     await wf.analyzeRequest(ctx, id);
@@ -118,10 +124,12 @@ export async function authorizeAndPayAction(fd: FormData) {
     const session = await getSession();
     const id = idFrom(fd);
     const ctx = await server.ctx();
+    const decision = str(fd, "decision");
     await wf.authorize(ctx, session, id, {
       verifiedAmountAndRecipient: fd.get("verified") === "on",
       reviewedAlerts: fd.get("reviewedAlerts") === "on",
       reason: str(fd, "reason"),
+      decision: decision === "up_to_balance" || decision === "exception" ? decision : "full",
     });
     const res = await payAsOrganizer(session, id, await server.payTool(), ctx.db);
     target = withQuery(target, res.status === "confirmed" ? "ok" : "error", payMessage(res.status, res.mode));
@@ -185,15 +193,8 @@ function payMessage(status: string, mode: string): string {
 export async function updatePolicyAction(fd: FormData) {
   let target = "/evento/politica";
   try {
-    const categories = str(fd, "categories")
-      .split(",")
-      .map((c) => c.trim().toLowerCase())
-      .filter(Boolean);
     await wf.updatePolicy(await server.ctx(), await getSession(), {
       name: str(fd, "name"),
-      startDate: str(fd, "startDate"),
-      endDate: str(fd, "endDate"),
-      categories,
       capPerReceiptCents: parseArsToCents(str(fd, "cap")),
       budgetCents: parseArsToCents(str(fd, "budget")),
     });
@@ -205,18 +206,12 @@ export async function updatePolicyAction(fd: FormData) {
   redirect(target);
 }
 
-export async function setAutoPayLimitAction(fd: FormData) {
+/** Tope de 24 h del agente. Vacío = automático (3 veces el máximo por ticket del presupuesto del gasto). */
+export async function setAutoPayCapAction(fd: FormData) {
   let target = "/agente";
   try {
-    const session = await getSession();
-    const ctx = await server.ctx();
-    const raw = str(fd, "limit").trim();
-    await wf.setAutoPayLimit(ctx, session, raw === "" ? 0 : parseArsToCents(raw));
-    // Tope de 24 h: vacío = automático (3 veces el límite por gasto).
-    if (fd.has("dailyCap")) {
-      const cap = str(fd, "dailyCap").trim();
-      await wf.setAutoPayDailyCap(ctx, session, cap === "" ? null : parseArsToCents(cap));
-    }
+    const cap = str(fd, "dailyCap").trim();
+    await wf.setAutoPayDailyCap(await server.ctx(), await getSession(), cap === "" ? null : parseArsToCents(cap));
     target = withQuery(target, "ok", "Pago automático guardado.");
   } catch (err) {
     target = withQuery(target, "error", errorMessage(err));
@@ -230,7 +225,7 @@ export async function previewExpenseAction(_prev: wf.PreviewResult | null, fd: F
   try {
     const file = fd.get("receipt");
     if (!(file instanceof File) || file.size === 0) return { ok: false, error: "Falta la imagen del comprobante." };
-    return await wf.previewExpense(await server.ctx(), await getSession(), { bytes: new Uint8Array(await file.arrayBuffer()) });
+    return await wf.previewExpense(await server.ctx(), await getSession(), { bytes: new Uint8Array(await file.arrayBuffer()) }, budgetIdFrom(fd));
   } catch (err) {
     return { ok: false, error: errorMessage(err) };
   }

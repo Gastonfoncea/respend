@@ -10,7 +10,8 @@ import { openPglite } from "../lib/db.ts";
 import { createFsReceiptStore } from "../lib/receipts.ts";
 import * as repo from "../lib/repo.ts";
 import { readConfig } from "../lib/config.ts";
-import { DEMO_POLICY, DEMO_DESCRIPTIONS, DEMO_EXPECTED, DEMO_CLARIFICATION_02 } from "../lib/demo.ts";
+import * as budgets from "../lib/budgets.ts";
+import { DEMO_BUDGET, DEMO_CATEGORIES, DEMO_POLICY, DEMO_DESCRIPTIONS, DEMO_EXPECTED, DEMO_CLARIFICATION_02 } from "../lib/demo.ts";
 import { createFakeAnalyzer, createRealAnalyzer } from "../lib/agent/analyze.ts";
 import { analyzeRequest, respondClarification, submitExpense, aiOutputOf, type Ctx } from "../lib/workflow.ts";
 import type { Session } from "../lib/types.ts";
@@ -29,6 +30,9 @@ const ctx: Ctx = { db, receipts: createFsReceiptStore(path.join(dir, "receipts")
 // Sin pagos: la dirección solo se guarda en la base en memoria (ejemplo del estándar EIP-55).
 const recipient = cfg.demoCollaboratorAddress ?? "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed";
 const memberId = await repo.insertMember(db, { email: "smoke@respend.local", name: "Prueba", role: "collaborator", wallet: recipient });
+for (const c of DEMO_CATEGORIES) await budgets.upsertCategory(db, c);
+const budgetId = await budgets.insertBudget(db, { ...DEMO_BUDGET, createdBy: null });
+await budgets.upsertAssignment(db, { budgetId, memberId, categoryKey: null, amountCents: DEMO_POLICY.budgetCents, by: null });
 const COLLAB: Session = { memberId, role: "collaborator", name: "Prueba", issuedAt: Date.now() };
 
 console.log(`Proveedor: ${fake ? "fake (sin IA)" : cfg.ai.provider} · modelo: ${fake ? "fake-analyzer" : cfg.ai.model} · base: ${fake ? "-" : cfg.ai.baseUrl}\n`);

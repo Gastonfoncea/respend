@@ -19,9 +19,15 @@ const VERDICT: Record<Extract<PreviewResult, { ok: true }>["verdict"], { tone: s
 const ars = (cents: number | null) =>
   cents == null ? "—" : `$ ${(cents / 100).toLocaleString("es-AR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-export default function Composer({ canSubmit, aiReady }: { canSubmit: boolean; aiReady: boolean }) {
+export interface BudgetChoice {
+  id: number;
+  label: string;
+}
+
+export default function Composer({ canSubmit, aiReady, budgets }: { canSubmit: boolean; aiReady: boolean; budgets: BudgetChoice[] }) {
   const [state, dispatch, reading] = useActionState(previewExpenseAction, null);
   const [file, setFile] = useState<File | null>(null);
+  const [budgetId, setBudgetId] = useState<number | null>(budgets[0]?.id ?? null);
   const [url, setUrl] = useState<string | null>(null);
 
   useEffect(() => {
@@ -34,8 +40,13 @@ export default function Composer({ canSubmit, aiReady }: { canSubmit: boolean; a
   function onFile(f: File | null) {
     setFile(f);
     if (!f || !aiReady) return;
+    preview(f, budgetId);
+  }
+
+  function preview(f: File, b: number | null) {
     const fd = new FormData();
     fd.set("receipt", f);
+    if (b != null) fd.set("budgetId", String(b));
     startTransition(() => dispatch(fd));
   }
 
@@ -46,6 +57,29 @@ export default function Composer({ canSubmit, aiReady }: { canSubmit: boolean; a
 
   return (
     <form action={submitExpenseAction} className="stack gap-24" encType="multipart/form-data">
+      {budgets.length > 1 ? (
+        <label className="field rise">
+          <span className="field-label">Presupuesto</span>
+          <select
+            className="input"
+            name="budgetId"
+            value={budgetId ?? ""}
+            onChange={(e) => {
+              const b = Number(e.target.value);
+              setBudgetId(b);
+              if (file && aiReady) preview(file, b);
+            }}
+          >
+            {budgets.map((b) => (
+              <option key={b.id} value={b.id}>
+                {b.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : (
+        budgetId != null && <input type="hidden" name="budgetId" value={budgetId} />
+      )}
       <div className="rise">
         <ReceiptPicker onFile={onFile} />
       </div>

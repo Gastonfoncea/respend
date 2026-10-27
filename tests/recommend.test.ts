@@ -2,12 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { recommend, fieldsFromAi } from "../lib/agent/recommend.ts";
 import { evaluateChecks } from "../lib/policy.ts";
-import { DEMO_POLICY } from "../lib/demo.ts";
+import { DEMO_EVAL_POLICY } from "./helpers.ts";
 import type { DuplicateFlags } from "../lib/types.ts";
 import type { AiOutput } from "../lib/agent/prompt.ts";
 import { aiOut, RECIPIENT } from "./helpers.ts";
 
-const policy = { ...DEMO_POLICY, version: 1 };
+const policy = DEMO_EVAL_POLICY;
 function rec(ai: AiOutput, duplicates: DuplicateFlags = { file: [], data: [] }) {
   const fields = fieldsFromAi(ai);
   const checks = evaluateChecks({ policy, fields, recipient: RECIPIENT, availableForRequestCents: 500000, duplicates });

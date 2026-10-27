@@ -171,6 +171,27 @@ export async function updateMember(ctx: Ctx, session: Session | null, memberId: 
     const changed = Object.entries(fields).filter(([k, v]) => before[k as keyof MemberRow] !== v);
     if (!changed.length) return;
     await repo.updateMember(q, memberId, Object.fromEntries(changed));
+    // Wallet nueva: los gastos que todavía no se pagan van a la wallet nueva, y si tenían una autorización
+    // pendiente se revoca (el destino aprobado ya no es el vigente). Los pagados o pagándose no se tocan.
+    if ("wallet" in fields && fields.wallet !== before.wallet && fields.wallet) {
+      const open = (await repo.listRequestsByMember(q, memberId)).filter((r) =>
+        ["submitted", "analyzed", "needs_info", "authorized", "payment_failed"].includes(r.status),
+      );
+      for (const r of open) {
+        const auth = await repo.getActiveAuthorization(q, r.id);
+        const live = (await repo.listPayments(q, r.id)).some((p) => p.status !== "failed");
+        if (live) continue;
+        if (auth) {
+          await repo.revokeAuthorization(q, auth.id, "Cambió la wallet de cobro del miembro.");
+          await repo.audit(q, r.id, actorName(s), "authorization_revoked", { authorization_id: auth.id, reason: "wallet_changed" });
+        }
+        await q.query("UPDATE requests SET recipient = $1, status = CASE WHEN status = 'authorized' THEN 'analyzed' ELSE status END, updated_at = $2 WHERE id = $3", [
+          fields.wallet,
+          new Date().toISOString(),
+          r.id,
+        ]);
+      }
+    }
     await repo.audit(q, null, actorName(s), "member_updated", {
       member_id: memberId,
       before: Object.fromEntries(changed.map(([k]) => [k, before[k as keyof MemberRow]])),

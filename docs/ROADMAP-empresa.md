@@ -27,16 +27,16 @@ La app hace lo mismo que hoy, pero corre en la nube.
 
 ## 3. Eventos
 
-- [ ] Crear y editar eventos: nombre, fechas, presupuesto y política.
-- [ ] Separar gastos, presupuesto y pago automático por evento.
-- [ ] Selector de evento para organizador y colaborador.
+- [x] Crear y editar presupuestos (un evento o un mes): nombre, fechas y máximo por ticket del pago automático. La política general (tope por ticket y presupuesto total) queda aparte.
+- [x] Separar gastos, saldo y pago automático por presupuesto y por persona (asignaciones).
+- [x] El colaborador elige el presupuesto al presentar y ve "Mis presupuestos"; el organizador, la lista y el detalle.
 
 ## 4. Categorías y límites
 
-- [ ] Crear y editar categorías (hoy están fijas: transporte y materiales).
-- [ ] Límites por categoría y ajuste por persona (base: `docs/SPEC-limites-por-persona.md`).
-- [ ] El colaborador ve cuánto le queda antes de gastar.
-- [ ] El agente usa las categorías del evento al leer el ticket.
+- [x] Crear y editar categorías, con una descripción que usa el agente para clasificar.
+- [x] Asignación por persona con categoría opcional (`docs/SPEC-limites-por-persona.md`). La caja del owner: pagar, hasta el saldo o excepción con motivo.
+- [x] El colaborador ve cuánto le queda antes de gastar (inicio y vista previa).
+- [x] El agente usa las categorías activas (y sus descripciones) al leer el ticket.
 
 ## Reglas que se mantienen
 

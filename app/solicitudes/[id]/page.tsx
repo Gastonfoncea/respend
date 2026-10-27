@@ -4,6 +4,7 @@ import { requireRole } from "@/lib/session.ts";
 import * as server from "@/lib/server.ts";
 import * as repo from "@/lib/repo.ts";
 import * as wf from "@/lib/workflow.ts";
+import * as budgets from "@/lib/budgets.ts";
 import { reconcile } from "@/lib/chain/reconcile.ts";
 import { centsToDecimalString, centsToWei, formatArs, formatWars } from "@/lib/money.ts";
 import { CHAIN_ID, WARS_ADDRESS, txUrl } from "@/lib/config.ts";
@@ -97,6 +98,22 @@ export default async function SolicitudPage({
   const payments = await repo.listPayments(db, id);
   const audit = await repo.listAudit(db, id);
   const policy = await repo.getPolicy(db);
+  const categories = (await budgets.listCategories(db, true)).map((c) => c.key);
+  // Caja de decisión del owner: saldo de la asignación y por qué no se pagó sola.
+  const budgetRow = r.budget_id != null ? await budgets.getBudgetById(db, r.budget_id) : null;
+  const balance = await wf.assignmentBalanceFor(db, r);
+  const legacy = r.member_id == null || r.budget_id == null;
+  const decision: DecisionInfo = {
+    opts: wf.decisionOptions(r.amount_cents ?? 0, balance, legacy),
+    budgetName: budgetRow?.name ?? null,
+    maxCents: budgetRow?.autopay_max_per_receipt_cents ?? null,
+    category: balance?.assignment.category_key ?? null,
+    skip: (() => {
+      const a = [...audit].reverse().find((x) => x.action === "auto_pay_skipped");
+      const reason = parse<{ reason?: wf.AutoPaySkip }>(a?.detail ?? null, {}).reason;
+      return reason ? wf.AUTO_PAY_SKIP_TEXT[reason] : null;
+    })(),
+  };
   const missingKey = cfg.aiMode === "real" && !cfg.ai.apiKey;
   const canAuthorize =
     isOrg && ["analyzed", "needs_info", "payment_failed"].includes(r.status) && r.recommendation != null && r.recommendation !== "reject";
@@ -264,7 +281,7 @@ export default async function SolicitudPage({
             <SectionLabel
               action={
                 <Sheet triggerClassName="btn-link inline" trigger={<><Icon name="pen" size={14} stroke={2} /> Corregir</>}>
-                  <CorrectForm r={r!} categories={policy.categories} />
+                  <CorrectForm r={r!} categories={categories} />
                 </Sheet>
               }
             >
@@ -399,7 +416,7 @@ export default async function SolicitudPage({
           {askSheet}
           {rejectSheet(false)}
           <Sheet triggerClassName="btn btn-primary" trigger={r!.status === "payment_failed" ? "Volver a autorizar" : "Revisar y pagar"}>
-            <PayForm r={r!} needsReview={needsReview} mode={cfg.paymentMode} />
+            <PayForm r={r!} needsReview={needsReview} mode={cfg.paymentMode} decision={decision} />
           </Sheet>
         </div>
       );
@@ -939,10 +956,43 @@ function CorrectForm({ r, categories }: { r: RequestRow; categories: string[] })
   );
 }
 
-function PayForm({ r, needsReview, mode }: { r: RequestRow; needsReview: boolean; mode: PaymentMode }) {
+interface DecisionInfo {
+  opts: wf.DecisionOptions;
+  budgetName: string | null;
+  maxCents: number | null;
+  category: string | null;
+  /** Por qué no se pagó sola (texto), si el agente lo evaluó. */
+  skip: string | null;
+}
+
+function PayForm({ r, needsReview, mode, decision }: { r: RequestRow; needsReview: boolean; mode: PaymentMode; decision: DecisionInfo }) {
+  const { opts } = decision;
+  const choices: { value: wf.OwnerDecision; label: string; cents: number }[] = [];
+  if (opts.full) choices.push({ value: "full", label: "Pagar", cents: opts.amountCents });
+  if (opts.upToBalance != null) choices.push({ value: "up_to_balance", label: "Pagar hasta el saldo", cents: opts.upToBalance });
+  if (opts.exception != null) choices.push({ value: "exception", label: "Pagar todo como excepción (motivo obligatorio)", cents: opts.amountCents });
   return (
     <>
       <h2 className="display h2">Antes de pagar</h2>
+      {!opts.balance && opts.full ? null : (
+        <div className="panel">
+          <Rows>
+            <Row k="Presupuesto">{decision.budgetName ?? "—"}</Row>
+            <Row k="Asignación">{opts.balance ? (decision.category ?? "Cualquier categoría") : "No tiene"}</Row>
+            {opts.balance && (
+              <>
+                <Row k="Asignado">{formatArs(opts.balance.assignment.amount_cents)}</Row>
+                <Row k="Consumido">{formatArs(opts.balance.consumedCents)}</Row>
+                <Row k="Disponible" tone={opts.balance.availableCents >= opts.amountCents ? "green" : "amb"}>
+                  {formatArs(opts.balance.availableCents)}
+                </Row>
+              </>
+            )}
+            {decision.maxCents != null && <Row k="Pago automático hasta">{decision.maxCents > 0 ? formatArs(decision.maxCents) : "Apagado"}</Row>}
+            {decision.skip && <Row k="No se pagó sola porque">{decision.skip}</Row>}
+          </Rows>
+        </div>
+      )}
       <Amount cents={r.amount_cents} size="sm" suffix=" ARS" />
       <p className="mono dim" style={{ margin: 0 }}>
         = {r.amount_cents != null ? formatWars(centsToWei(r.amount_cents)) : "—"} · Celo {CHAIN_ID}
@@ -958,6 +1008,25 @@ function PayForm({ r, needsReview, mode }: { r: RequestRow; needsReview: boolean
       </p>
       <form action={authorizeAndPayAction} className="stack gap-12">
         <input type="hidden" name="requestId" value={r.id} />
+        {choices.length > 1 ? (
+          <fieldset className="stack gap-8" style={{ border: 0, padding: 0, margin: 0 }}>
+            {choices.map((c, i) => (
+              <label key={c.value} className="check">
+                <input type="radio" name="decision" value={c.value} defaultChecked={i === 0} required /> {c.label} · <b>{formatArs(c.cents)}</b>
+              </label>
+            ))}
+          </fieldset>
+        ) : (
+          <input type="hidden" name="decision" value={choices[0]?.value ?? "full"} />
+        )}
+        {choices.length === 1 && choices[0].value !== "full" && (
+          <p className="small">
+            {choices[0].label}: <b>{formatArs(choices[0].cents)}</b>
+          </p>
+        )}
+        {!needsReview && opts.exception != null && (
+          <input className="input" name="reason" maxLength={1000} placeholder="Motivo (obligatorio si pagás como excepción)" />
+        )}
         {needsReview && (
           <>
             <label className="check">
@@ -979,7 +1048,7 @@ function PayForm({ r, needsReview, mode }: { r: RequestRow; needsReview: boolean
         )}
         <HoldButton label={mode === "mainnet" ? "Mantené para pagar en mainnet" : "Mantené para pagar"} />
         <p className="field-help" style={{ textAlign: "center" }}>
-          {formatArs(r.amount_cents ?? 0)} · mantené apretado 1 segundo
+          {choices.length === 1 ? formatArs(choices[0].cents) : "Elegí cuánto"} · mantené apretado 1 segundo
         </p>
       </form>
     </>

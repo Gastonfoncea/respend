@@ -1,12 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { AuthError } from "../lib/auth.ts";
-import { analyzeRequest, setAutoPayLimit, submitExpense, WorkflowError } from "../lib/workflow.ts";
+import { analyzeRequest, submitExpense, WorkflowError } from "../lib/workflow.ts";
+import { updateBudget } from "../lib/budgetAdmin.ts";
+import * as budgets from "../lib/budgets.ts";
 import { maybeAutoPay } from "../lib/autopay.ts";
 import { createPayTool } from "../lib/chain/payTool.ts";
 import * as repo from "../lib/repo.ts";
-import { DEFAULT_AUTO_PAY_LIMIT_CENTS } from "../lib/demo.ts";
-import { aiOut, makeCtx, scriptedAnalyzer, COLLAB, ORG, RECIPIENT, tinyPng, type TestCtx } from "./helpers.ts";
+import { DEMO_BUDGET } from "../lib/demo.ts";
+import { aiOut, makeCtx, scriptedAnalyzer, setAutoPayMax, BUDGET_ID, COLLAB, ORG, RECIPIENT, tinyPng, type TestCtx } from "./helpers.ts";
 import { mainnetSetup } from "./payments-helpers.ts";
 
 /** Contexto cuyo analizador falso devuelve el importe que diga la descripción ("100.00", "100.01", …). */
@@ -22,10 +24,10 @@ async function analyzed(ctx: TestCtx, description: string, seed: number) {
 
 const simulated = (ctx: TestCtx) => createPayTool({ db: ctx.db, mode: "simulated", account: null });
 
-test("sin configurar, el límite automático es 100 wARS", async () => {
+test("el presupuesto de la demo paga solo hasta 100 wARS por ticket", async () => {
   const ctx = await makeCtx();
-  assert.equal(DEFAULT_AUTO_PAY_LIMIT_CENTS, 10000);
-  assert.equal(await repo.getAutoPayLimitCents(ctx.db), 10000);
+  assert.equal(DEMO_BUDGET.autopayMaxCents, 10000);
+  assert.equal((await budgets.getBudgetById(ctx.db, BUDGET_ID))!.autopay_max_per_receipt_cents, 10000);
 });
 
 test("$ 100,00 exactos se pagan solos; queda registrado que fue automático", async () => {
@@ -70,27 +72,28 @@ test("con alertas no se paga solo aunque el monto sea chico", async () => {
 
 test("en 0 queda apagado: todo espera al organizador", async () => {
   const ctx = await ctxWithAmounts();
-  await setAutoPayLimit(ctx, ORG, 0);
+  await setAutoPayMax(ctx.db, 0);
   const id = await analyzed(ctx, "10.00 remís", 1);
   assert.equal(await maybeAutoPay(ctx, id, simulated(ctx)), null);
   assert.equal((await repo.getRequest(ctx.db, id))!.status, "analyzed");
 });
 
-test("el límite lo cambia solo el organizador, sin pasar el tope por comprobante, y queda auditado", async () => {
+test("el máximo por ticket lo cambia solo el organizador, sin pasar el tope por comprobante, y queda auditado", async () => {
   const ctx = await makeCtx();
-  await assert.rejects(() => setAutoPayLimit(ctx, COLLAB, 50000), (e: unknown) => e instanceof AuthError && e.code === "forbidden");
-  await assert.rejects(() => setAutoPayLimit(ctx, null, 50000), AuthError);
-  await assert.rejects(() => setAutoPayLimit(ctx, ORG, 200001), WorkflowError);
-  await assert.rejects(() => setAutoPayLimit(ctx, ORG, -1), WorkflowError);
-  await setAutoPayLimit(ctx, ORG, 50000);
-  assert.equal(await repo.getAutoPayLimitCents(ctx.db), 50000);
-  const [{ n }] = await ctx.db.query<{ n: number }>("SELECT COUNT(*)::int AS n FROM audit_log WHERE action = 'auto_pay_limit_updated'");
+  const b = (await budgets.getBudgetById(ctx.db, BUDGET_ID))!;
+  const input = (cents: number) => ({ name: b.name, startsOn: b.starts_on, endsOn: b.ends_on, autopayMaxCents: cents, status: "open" as const });
+  await assert.rejects(() => updateBudget(ctx, COLLAB, BUDGET_ID, input(50000)), (e: unknown) => e instanceof AuthError && e.code === "forbidden");
+  await assert.rejects(() => updateBudget(ctx, null, BUDGET_ID, input(50000)), AuthError);
+  await assert.rejects(() => updateBudget(ctx, ORG, BUDGET_ID, input(200001)), WorkflowError);
+  await updateBudget(ctx, ORG, BUDGET_ID, input(50000));
+  assert.equal((await budgets.getBudgetById(ctx.db, BUDGET_ID))!.autopay_max_per_receipt_cents, 50000);
+  const [{ n }] = await ctx.db.query<{ n: number }>("SELECT COUNT(*)::int AS n FROM audit_log WHERE action = 'budget_updated'");
   assert.equal(n, 1);
 });
 
-test("el límite se lee al momento de pagar: si el organizador lo sube, aplica a lo próximo", async () => {
+test("el máximo se lee al momento de pagar: si el organizador lo sube, aplica a lo próximo", async () => {
   const ctx = await ctxWithAmounts();
-  await setAutoPayLimit(ctx, ORG, 150000);
+  await setAutoPayMax(ctx.db, 150000);
   const id = await analyzed(ctx, "1500.00 remís", 1);
   assert.equal((await maybeAutoPay(ctx, id, simulated(ctx)))?.status, "confirmed");
 });

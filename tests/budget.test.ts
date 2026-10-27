@@ -21,7 +21,8 @@ test("con $5.000: autorizar $2.000 + $2.000 y luego $1.500 → el tercero se rec
   await authorize(ctx, ORG, a, OK);
   await authorize(ctx, ORG, b, OK);
   assert.deepEqual(await getBudget(ctx.db), { totalCents: 500000, committedCents: 400000, paidCents: 0, availableCents: 100000 });
-  await assert.rejects(() => authorize(ctx, ORG, c, OK), /presupuesto/);
+  // Ya no alcanza: ni el saldo de la asignación ni el presupuesto total.
+  await assert.rejects(() => authorize(ctx, ORG, c, OK), /saldo|presupuesto/);
 });
 
 test("un pago uncertain cuenta como comprometido", async () => {
